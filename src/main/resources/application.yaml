@@ -1,0 +1,33 @@
+server:
+  port: ${GATEWAY_PORT:8000}
+
+spring:
+  application:
+    name: api-gateway
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          jwk-set-uri: ${KEYCLOAK_AUTH_SERVER_URL:http://localhost:8080}/realms/${KEYCLOAK_REALM:game-cellar}/protocol/openid-connect/certs
+  cloud:
+    gateway:
+      mvc:
+        routes:
+          - id: game-service
+            uri: ${GAME_SERVICE_URL:http://localhost:8081}
+            predicates:
+              - Path=/api/v1/games/**
+          - id: library-service
+            uri: ${LIBRARY_SERVICE_URL:http://localhost:8082}
+            predicates:
+              - Path=/api/v1/library/**
+          - id: recommendation-service
+            uri: ${RECOMMENDATION_SERVICE_URL:http://localhost:8083}
+            predicates:
+              - Path=/api/v1/recommendations/**
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
