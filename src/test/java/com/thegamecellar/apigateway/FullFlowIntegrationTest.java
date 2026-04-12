@@ -2,9 +2,11 @@ package com.thegamecellar.apigateway;
 
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.http.*;
+import org.springframework.test.context.TestPropertySource;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.RestClient;
@@ -23,6 +25,7 @@ import static org.springframework.boot.test.context.SpringBootTest.WebEnvironmen
  *   mvn test -Dtest=FullFlowIntegrationTest -DfailIfNoTests=false
  */
 @SpringBootTest(webEnvironment = RANDOM_PORT)
+@TestPropertySource(locations = "classpath:application-test.properties")
 class FullFlowIntegrationTest {
 
     private static final String GAMES_GENRES_PATH = "/api/v1/games/genres";
@@ -33,9 +36,14 @@ class FullFlowIntegrationTest {
     @LocalServerPort
     private int port;
 
-    // -----------------------------------------------------------------------
-    // Test 1 — no token
-    // -----------------------------------------------------------------------
+    @Value("${keycloak.test.client-secret}")
+    private String clientSecret;
+
+    @Value("${keycloak.test.username}")
+    private String testUsername;
+
+    @Value("${keycloak.test.password}")
+    private String testPassword;
 
     @Test
     @Disabled("Requires Keycloak (:8080) and Game Service (:8081) to be running")
@@ -50,10 +58,6 @@ class FullFlowIntegrationTest {
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
     }
 
-    // -----------------------------------------------------------------------
-    // Test 2 — invalid / garbage token
-    // -----------------------------------------------------------------------
-
     @Test
     @Disabled("Requires Keycloak (:8080) and Game Service (:8081) to be running")
     void requestWithInvalidToken_shouldReturn401() {
@@ -67,10 +71,6 @@ class FullFlowIntegrationTest {
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
     }
-
-    // -----------------------------------------------------------------------
-    // Test 3 — valid Keycloak token
-    // -----------------------------------------------------------------------
 
     @Test
     @Disabled("Requires Keycloak (:8080) and Game Service (:8081) to be running")
@@ -88,10 +88,6 @@ class FullFlowIntegrationTest {
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
     }
 
-    // -----------------------------------------------------------------------
-    // Helpers
-    // -----------------------------------------------------------------------
-
     private RestClient client() {
         return RestClient.create();
     }
@@ -108,9 +104,9 @@ class FullFlowIntegrationTest {
         MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
         form.add("grant_type", "password");
         form.add("client_id", "game-cellar-client");
-        form.add("client_secret", "REMOVED");
-        form.add("username", "testuser");
-        form.add("password", "testuser");
+        form.add("client_secret", clientSecret);
+        form.add("username", testUsername);
+        form.add("password", testPassword);
 
         ResponseEntity<Map> tokenResponse = RestClient.create()
                 .post()
