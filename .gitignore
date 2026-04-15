@@ -47,6 +47,7 @@ Thumbs.db
 ### Spring Boot Local Config ###
 application-local.yml
 application-local.properties
+application-test.properties
 
 ### Docs ###
 HELP.md
