@@ -1,9 +1,12 @@
 package com.thegamecellar.apigateway.config;
 
+import jakarta.servlet.http.Cookie;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.web.servlet.function.HandlerFilterFunction;
 import org.springframework.web.servlet.function.RouterFunction;
+import org.springframework.web.servlet.function.ServerRequest;
 import org.springframework.web.servlet.function.ServerResponse;
 
 import static org.springframework.cloud.gateway.server.mvc.filter.BeforeFilterFunctions.uri;
@@ -23,10 +26,32 @@ public class GatewayRoutesConfig {
     @Value("${RECOMMENDATION_SERVICE_URL:http://localhost:8083}")
     private String recommendationServiceUrl;
 
+    private HandlerFilterFunction<ServerResponse, ServerResponse> cookieToBearerHeader() {
+        return (request, next) -> {
+            Cookie[] cookies = request.servletRequest().getCookies();
+            if (cookies != null) {
+                for (Cookie cookie : cookies) {
+                    if ("access_token".equals(cookie.getName())) {
+                        String token = cookie.getValue();
+                        ServerRequest modified = ServerRequest.from(request)
+                                .headers(headers -> {
+                                    headers.remove("Authorization");
+                                    headers.set("Authorization", "Bearer " + token);
+                                })
+                                .build();
+                        return next.handle(modified);
+                    }
+                }
+            }
+            return next.handle(request);
+        };
+    }
+
     @Bean
     public RouterFunction<ServerResponse> gameServiceRoute() {
         return route("game-service")
                 .route(path("/api/v1/games/**"), http())
+                .filter(cookieToBearerHeader())
                 .before(uri(gameServiceUrl))
                 .build();
     }
@@ -35,6 +60,7 @@ public class GatewayRoutesConfig {
     public RouterFunction<ServerResponse> libraryServiceRoute() {
         return route("library-service")
                 .route(path("/api/v1/library/**"), http())
+                .filter(cookieToBearerHeader())
                 .before(uri(libraryServiceUrl))
                 .build();
     }
@@ -43,6 +69,7 @@ public class GatewayRoutesConfig {
     public RouterFunction<ServerResponse> recommendationServiceRoute() {
         return route("recommendation-service")
                 .route(path("/api/v1/recommendations/**"), http())
+                .filter(cookieToBearerHeader())
                 .before(uri(recommendationServiceUrl))
                 .build();
     }
