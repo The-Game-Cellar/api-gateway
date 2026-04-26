@@ -28,16 +28,17 @@ public class GatewayRoutesConfig {
 
     private HandlerFilterFunction<ServerResponse, ServerResponse> cookieToBearerHeader() {
         return (request, next) -> {
+            String existingAuth = request.headers().firstHeader("Authorization");
+            if (existingAuth != null) {
+                return next.handle(request);
+            }
             Cookie[] cookies = request.servletRequest().getCookies();
             if (cookies != null) {
                 for (Cookie cookie : cookies) {
                     if ("access_token".equals(cookie.getName())) {
                         String token = cookie.getValue();
                         ServerRequest modified = ServerRequest.from(request)
-                                .headers(headers -> {
-                                    headers.remove("Authorization");
-                                    headers.set("Authorization", "Bearer " + token);
-                                })
+                                .headers(headers -> headers.set("Authorization", "Bearer " + token))
                                 .build();
                         return next.handle(modified);
                     }

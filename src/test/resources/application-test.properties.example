@@ -1,0 +1,11 @@
+# Copy to application-test.properties and fill in real values before running FullFlowIntegrationTest.
+# Requires Keycloak (:8080) to be running with the game-cellar realm configured.
+#
+# Set env vars OR replace the placeholders directly in application-test.properties (never commit secrets).
+#
+# KEYCLOAK_TEST_CLIENT_SECRET — client secret for game-cellar-client in Keycloak admin
+# KEYCLOAK_TEST_USERNAME      — test user with email verified in game-cellar realm
+# KEYCLOAK_TEST_PASSWORD      — password for that test user
+keycloak.test.client-secret=${KEYCLOAK_TEST_CLIENT_SECRET:}
+keycloak.test.username=${KEYCLOAK_TEST_USERNAME:testuser}
+keycloak.test.password=${KEYCLOAK_TEST_PASSWORD:testuser}
