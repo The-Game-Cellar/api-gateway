@@ -33,14 +33,14 @@ public class SecurityConfig {
             .oauth2ResourceServer(oauth2 -> oauth2
                 .jwt(jwt -> {})
                 .bearerTokenResolver(request -> {
+                    String header = request.getHeader("Authorization");
+                    if (header != null && header.startsWith("Bearer ")) return header.substring(7);
                     Cookie[] cookies = request.getCookies();
                     if (cookies != null) {
                         for (Cookie c : cookies) {
                             if ("access_token".equals(c.getName())) return c.getValue();
                         }
                     }
-                    String header = request.getHeader("Authorization");
-                    if (header != null && header.startsWith("Bearer ")) return header.substring(7);
                     return null;
                 })
             );
