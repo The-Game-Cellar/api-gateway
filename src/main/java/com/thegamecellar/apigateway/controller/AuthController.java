@@ -13,8 +13,10 @@ import org.springframework.http.ResponseCookie;
 import org.springframework.http.ResponseEntity;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -51,8 +53,11 @@ public class AuthController {
     @Value("${GATEWAY_ADMIN_CLIENT_ID:gateway-admin}")
     private String adminClientId;
 
-    @Value("${GATEWAY_ADMIN_CLIENT_SECRET:}")
+    @Value("${GATEWAY_ADMIN_CLIENT_SECRET}")
     private String adminClientSecret;
+
+    @Value("${LIBRARY_SERVICE_URL:http://localhost:8082}")
+    private String libraryServiceUrl;
 
     @PostMapping("/login")
     public ResponseEntity<?> login(@RequestBody Map<String, String> body, HttpServletResponse response) {
@@ -175,6 +180,185 @@ public class AuthController {
         }
     }
 
+    @PutMapping("/change-password")
+    public ResponseEntity<?> changePassword(@RequestBody Map<String, String> body,
+                                            HttpServletRequest request) {
+        String currentPassword = body.get("currentPassword");
+        String newPassword     = body.get("newPassword");
+
+        if (currentPassword == null || currentPassword.isBlank() ||
+            newPassword     == null || newPassword.isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Current and new password are required"));
+        }
+
+        if (!isPasswordStrong(newPassword)) {
+            return ResponseEntity.badRequest().body(Map.of("error",
+                    "New password must be at least 8 characters and contain at least one letter and one digit"));
+        }
+
+        String accessToken = readCookie(request, "access_token");
+        if (accessToken == null || accessToken.isBlank()) {
+            return ResponseEntity.status(401).body(Map.of("error", "Not authenticated"));
+        }
+        Map<?, ?> claims = parseJwtPayload(accessToken);
+        String userId = (String) claims.get("sub");
+        String username = (String) claims.get("preferred_username");
+        if (userId == null || username == null) {
+            return ResponseEntity.status(401).body(Map.of("error", "Invalid token"));
+        }
+
+        if (!verifyPassword(username, currentPassword)) {
+            return ResponseEntity.status(401).body(Map.of("error", "Current password is incorrect"));
+        }
+
+        try {
+            String adminToken = getAdminToken();
+            Map<String, Object> credential = Map.of("type", "password", "value", newPassword, "temporary", false);
+            restClient.put()
+                    .uri(keycloakUrl + "/admin/realms/" + realm + "/users/" + userId + "/reset-password")
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + adminToken)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(credential)
+                    .retrieve()
+                    .toBodilessEntity();
+            return ResponseEntity.ok(Map.of("message", "Password updated"));
+        } catch (RestClientResponseException e) {
+            log.error("Change password Keycloak error: status={} body={}", e.getStatusCode(), e.getResponseBodyAsString());
+            return ResponseEntity.status(400).body(Map.of("error", "Password update failed. Check requirements and try again."));
+        } catch (Exception e) {
+            log.error("Change password unexpected error", e);
+            return ResponseEntity.status(500).body(Map.of("error", "Password update failed. Please try again."));
+        }
+    }
+
+    @PutMapping("/change-email")
+    public ResponseEntity<?> changeEmail(@RequestBody Map<String, String> body,
+                                         HttpServletRequest request,
+                                         HttpServletResponse response) {
+        String currentPassword = body.get("currentPassword");
+        String newEmail        = body.get("newEmail");
+
+        if (currentPassword == null || currentPassword.isBlank() ||
+            newEmail        == null || newEmail.isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Current password and new email are required"));
+        }
+
+        String accessToken = readCookie(request, "access_token");
+        if (accessToken == null || accessToken.isBlank()) {
+            return ResponseEntity.status(401).body(Map.of("error", "Not authenticated"));
+        }
+        Map<?, ?> claims = parseJwtPayload(accessToken);
+        String userId = (String) claims.get("sub");
+        String username = (String) claims.get("preferred_username");
+        String currentEmail = (String) claims.get("email");
+        if (userId == null || username == null) {
+            return ResponseEntity.status(401).body(Map.of("error", "Invalid token"));
+        }
+
+        if (currentEmail != null && currentEmail.equalsIgnoreCase(newEmail.trim())) {
+            return ResponseEntity.badRequest().body(Map.of("error", "New email is the same as current email"));
+        }
+
+        if (!verifyPassword(username, currentPassword)) {
+            return ResponseEntity.status(401).body(Map.of("error", "Current password is incorrect"));
+        }
+
+        try {
+            String adminToken = getAdminToken();
+            Map<String, Object> patch = Map.of("email", newEmail.trim(), "emailVerified", true);
+            restClient.put()
+                    .uri(keycloakUrl + "/admin/realms/" + realm + "/users/" + userId)
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + adminToken)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(patch)
+                    .retrieve()
+                    .toBodilessEntity();
+
+            String refreshToken = readCookie(request, "refresh_token");
+            if (refreshToken != null) {
+                MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
+                form.add("grant_type", "refresh_token");
+                form.add("client_id", clientId);
+                form.add("refresh_token", refreshToken);
+                Map<?, ?> tokens = callKeycloak(form);
+                setAuthCookies(response, tokens);
+                return ResponseEntity.ok(extractUserInfo(tokens));
+            }
+            return ResponseEntity.ok(Map.of("message", "Email updated"));
+        } catch (RestClientResponseException e) {
+            log.error("Change email Keycloak error: status={} body={}", e.getStatusCode(), e.getResponseBodyAsString());
+            if (e.getStatusCode().value() == 409) {
+                return ResponseEntity.status(409).body(Map.of("error", "Email already in use"));
+            }
+            return ResponseEntity.status(400).body(Map.of("error", "Email update failed. Check the address and try again."));
+        } catch (Exception e) {
+            log.error("Change email unexpected error", e);
+            return ResponseEntity.status(500).body(Map.of("error", "Email update failed. Please try again."));
+        }
+    }
+
+    @DeleteMapping("/account")
+    public ResponseEntity<?> deleteAccount(@RequestBody Map<String, String> body,
+                                            HttpServletRequest request,
+                                            HttpServletResponse response) {
+        String currentPassword = body.get("currentPassword");
+        if (currentPassword == null || currentPassword.isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Current password is required"));
+        }
+
+        String accessToken = readCookie(request, "access_token");
+        if (accessToken == null || accessToken.isBlank()) {
+            return ResponseEntity.status(401).body(Map.of("error", "Not authenticated"));
+        }
+        Map<?, ?> claims = parseJwtPayload(accessToken);
+        String userId = (String) claims.get("sub");
+        String username = (String) claims.get("preferred_username");
+        if (userId == null || username == null) {
+            return ResponseEntity.status(401).body(Map.of("error", "Invalid token"));
+        }
+
+        if (!verifyPassword(username, currentPassword)) {
+            return ResponseEntity.status(401).body(Map.of("error", "Current password is incorrect"));
+        }
+
+        try {
+            // Step 1 — purge user data from library_db.
+            // If this fails, Keycloak account stays intact and user can retry.
+            try {
+                restClient.delete()
+                        .uri(libraryServiceUrl + "/api/v1/library/account")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken)
+                        .retrieve()
+                        .toBodilessEntity();
+            } catch (RestClientResponseException e) {
+                log.error("Account delete: library purge failed for userId={}: status={} body={}",
+                        userId, e.getStatusCode(), e.getResponseBodyAsString());
+                return ResponseEntity.status(502).body(Map.of("error", "Could not purge library data — try again"));
+            }
+
+            // Step 2 — delete the Keycloak user. After this, the access token
+            // becomes orphaned and the next refresh will fail.
+            String adminToken = getAdminToken();
+            restClient.delete()
+                    .uri(keycloakUrl + "/admin/realms/" + realm + "/users/" + userId)
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + adminToken)
+                    .retrieve()
+                    .toBodilessEntity();
+
+            // Step 3 — clear cookies so the now-stale access token isn't reused.
+            clearAuthCookies(response);
+            return ResponseEntity.ok(Map.of("message", "Account deleted"));
+        } catch (RestClientResponseException e) {
+            log.error("Account delete Keycloak error for userId={}: status={} body={}",
+                    userId, e.getStatusCode(), e.getResponseBodyAsString());
+            return ResponseEntity.status(502).body(Map.of("error",
+                    "Library data purged but Keycloak account remains. Contact support."));
+        } catch (Exception e) {
+            log.error("Account delete unexpected error for userId={}", userId, e);
+            return ResponseEntity.status(500).body(Map.of("error", "Account deletion failed. Please try again."));
+        }
+    }
+
     @GetMapping("/me")
     public ResponseEntity<?> me(HttpServletRequest request) {
         String accessToken = readCookie(request, "access_token");
@@ -186,6 +370,34 @@ public class AuthController {
             return ResponseEntity.status(401).body(Map.of("error", "Invalid token"));
         }
         return ResponseEntity.ok(extractUserInfoFromClaims(claims));
+    }
+
+    private boolean isPasswordStrong(String password) {
+        if (password == null || password.length() < 8) return false;
+        boolean hasLetter = false;
+        boolean hasDigit = false;
+        for (int i = 0; i < password.length(); i++) {
+            char c = password.charAt(i);
+            if (Character.isLetter(c)) hasLetter = true;
+            else if (Character.isDigit(c)) hasDigit = true;
+            if (hasLetter && hasDigit) return true;
+        }
+        return false;
+    }
+
+    private boolean verifyPassword(String username, String password) {
+        MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
+        form.add("grant_type", "password");
+        form.add("client_id", clientId);
+        form.add("scope", "openid");
+        form.add("username", username);
+        form.add("password", password);
+        try {
+            callKeycloak(form);
+            return true;
+        } catch (RestClientResponseException e) {
+            return false;
+        }
     }
 
     @SuppressWarnings("unchecked")
