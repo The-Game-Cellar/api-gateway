@@ -1,6 +1,12 @@
 server:
   port: ${GATEWAY_PORT:8000}
 
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    enabled: false
+
 spring:
   application:
     name: api-gateway
