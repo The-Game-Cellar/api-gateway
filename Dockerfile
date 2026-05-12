@@ -1,0 +1,20 @@
+# syntax=docker/dockerfile:1.6
+
+# Build stage compiles the Spring Boot jar with Maven and a JDK image. Layer-cache
+# dependency resolution separately from source copy so iterative builds reuse the
+# heavy dependency layer.
+FROM maven:3.9-eclipse-temurin-21 AS build
+WORKDIR /build
+COPY pom.xml .
+RUN mvn dependency:go-offline -B
+COPY src ./src
+RUN mvn package -DskipTests -B
+
+# Runtime stage runs only the jar on a slim JRE. Non-root user, no Maven, no JDK.
+FROM eclipse-temurin:21-jre-alpine AS runtime
+RUN addgroup -S app && adduser -S -G app app
+WORKDIR /app
+COPY --from=build --chown=app:app /build/target/*.jar app.jar
+USER app
+EXPOSE 8000
+ENTRYPOINT ["java", "-jar", "/app/app.jar"]
