@@ -24,6 +24,7 @@ public class RequestIdFilter extends OncePerRequestFilter {
 
     public static final String HEADER = "X-Request-ID";
     public static final String MDC_KEY = "requestId";
+    private static final int MAX_LENGTH = 64;
 
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
@@ -31,6 +32,11 @@ public class RequestIdFilter extends OncePerRequestFilter {
         String id = request.getHeader(HEADER);
         if (id == null || id.isBlank()) {
             id = UUID.randomUUID().toString().substring(0, 8);
+        } else {
+            // Strip CR / LF / TAB so attacker-supplied header cannot forge log lines via the
+            // %X{requestId} MDC pattern, then cap length so a runaway value cannot fill log lines.
+            id = id.replaceAll("[\\r\\n\\t]", "_");
+            if (id.length() > MAX_LENGTH) id = id.substring(0, MAX_LENGTH);
         }
         MDC.put(MDC_KEY, id);
         response.setHeader(HEADER, id);
