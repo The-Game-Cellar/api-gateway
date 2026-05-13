@@ -52,6 +52,7 @@ public class GatewayRoutesConfig {
     public RouterFunction<ServerResponse> gameServiceRoute() {
         return route("game-service")
                 .route(path("/api/v1/games/**"), http())
+                .route(path("/api/v1/admin/**"), http())
                 .filter(cookieToBearerHeader())
                 .before(uri(gameServiceUrl))
                 .build();
