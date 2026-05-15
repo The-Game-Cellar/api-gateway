@@ -1,5 +1,7 @@
 package com.thegamecellar.apigateway.config;
 
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
 import io.github.bucket4j.Bandwidth;
 import io.github.bucket4j.Bucket;
 import jakarta.servlet.http.HttpServletRequest;
@@ -9,8 +11,6 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.servlet.HandlerInterceptor;
 
 import java.time.Duration;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 @Component
 public class LoginRateLimitInterceptor implements HandlerInterceptor {
@@ -21,12 +21,15 @@ public class LoginRateLimitInterceptor implements HandlerInterceptor {
     @Value("${RATE_LIMIT_LOGIN_WINDOW_SECONDS:60}")
     private int windowSeconds;
 
-    private final Map<String, Bucket> buckets = new ConcurrentHashMap<>();
+    private final Cache<String, Bucket> buckets = Caffeine.newBuilder()
+            .expireAfterAccess(Duration.ofMinutes(15))
+            .maximumSize(10_000)
+            .build();
 
     @Override
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) throws Exception {
         String ip = getClientIp(request);
-        Bucket bucket = buckets.computeIfAbsent(ip, k -> newBucket());
+        Bucket bucket = buckets.get(ip, k -> newBucket());
 
         if (bucket.tryConsume(1)) {
             return true;
