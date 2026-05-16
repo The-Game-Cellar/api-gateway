@@ -1,6 +1,5 @@
 package com.thegamecellar.apigateway.controller;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.Cookie;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -11,6 +10,9 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseCookie;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.springframework.security.oauth2.jwt.JwtException;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -23,11 +25,13 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
 
-import java.util.Base64;
+import java.net.URI;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 
 @RestController
 @RequestMapping("/api/v1/auth")
@@ -35,8 +39,12 @@ public class AuthController {
 
     private static final Logger log = LoggerFactory.getLogger(AuthController.class);
 
-    private final ObjectMapper objectMapper = new ObjectMapper();
     private final RestClient restClient = RestClient.create();
+    private final JwtDecoder jwtDecoder;
+
+    public AuthController(JwtDecoder jwtDecoder) {
+        this.jwtDecoder = jwtDecoder;
+    }
 
     @Value("${KEYCLOAK_AUTH_SERVER_URL:http://localhost:8080}")
     private String keycloakUrl;
@@ -58,6 +66,11 @@ public class AuthController {
 
     @Value("${LIBRARY_SERVICE_URL:http://localhost:8082}")
     private String libraryServiceUrl;
+
+    private static final long ADMIN_TOKEN_SAFETY_MARGIN_MS = 5_000L;
+    private final AtomicReference<TokenWithExpiry> cachedAdminToken = new AtomicReference<>();
+
+    private record TokenWithExpiry(String token, long expiresAtEpochMillis) {}
 
     @PostMapping("/login")
     public ResponseEntity<?> login(@RequestBody Map<String, String> body, HttpServletResponse response) {
@@ -135,8 +148,7 @@ public class AuthController {
         }
 
         try {
-            String adminToken = getAdminToken();
-            createKeycloakUser(adminToken, username, email, password);
+            createKeycloakUser(username, email, password);
 
             MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
             form.add("grant_type", "password");
@@ -212,15 +224,8 @@ public class AuthController {
         }
 
         try {
-            String adminToken = getAdminToken();
             Map<String, Object> credential = Map.of("type", "password", "value", newPassword, "temporary", false);
-            restClient.put()
-                    .uri(keycloakUrl + "/admin/realms/" + realm + "/users/" + userId + "/reset-password")
-                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + adminToken)
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .body(credential)
-                    .retrieve()
-                    .toBodilessEntity();
+            adminPut(keycloakUrl + "/admin/realms/" + realm + "/users/" + userId + "/reset-password", credential);
             return ResponseEntity.ok(Map.of("message", "Password updated"));
         } catch (RestClientResponseException e) {
             log.error("Change password Keycloak error: status={} body={}", e.getStatusCode(), e.getResponseBodyAsString());
@@ -264,15 +269,8 @@ public class AuthController {
         }
 
         try {
-            String adminToken = getAdminToken();
             Map<String, Object> patch = Map.of("email", newEmail.trim(), "emailVerified", true);
-            restClient.put()
-                    .uri(keycloakUrl + "/admin/realms/" + realm + "/users/" + userId)
-                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + adminToken)
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .body(patch)
-                    .retrieve()
-                    .toBodilessEntity();
+            adminPut(keycloakUrl + "/admin/realms/" + realm + "/users/" + userId, patch);
 
             String refreshToken = readCookie(request, "refresh_token");
             if (refreshToken != null) {
@@ -322,7 +320,7 @@ public class AuthController {
         }
 
         try {
-            // Step 1 — purge user data from library_db.
+            // Step 1: purge user data from library_db.
             // If this fails, Keycloak account stays intact and user can retry.
             try {
                 restClient.delete()
@@ -336,16 +334,11 @@ public class AuthController {
                 return ResponseEntity.status(502).body(Map.of("error", "Could not purge library data — try again"));
             }
 
-            // Step 2 — delete the Keycloak user. After this, the access token
+            // Step 2: delete the Keycloak user. After this the access token
             // becomes orphaned and the next refresh will fail.
-            String adminToken = getAdminToken();
-            restClient.delete()
-                    .uri(keycloakUrl + "/admin/realms/" + realm + "/users/" + userId)
-                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + adminToken)
-                    .retrieve()
-                    .toBodilessEntity();
+            adminDelete(keycloakUrl + "/admin/realms/" + realm + "/users/" + userId);
 
-            // Step 3 — clear cookies so the now-stale access token isn't reused.
+            // Step 3: clear cookies so the now-stale access token isn't reused.
             clearAuthCookies(response);
             return ResponseEntity.ok(Map.of("message", "Account deleted"));
         } catch (RestClientResponseException e) {
@@ -400,8 +393,17 @@ public class AuthController {
         }
     }
 
-    @SuppressWarnings("unchecked")
     private String getAdminToken() {
+        TokenWithExpiry cached = cachedAdminToken.get();
+        long now = System.currentTimeMillis();
+        if (cached != null && cached.expiresAtEpochMillis() - ADMIN_TOKEN_SAFETY_MARGIN_MS > now) {
+            return cached.token();
+        }
+        return refreshAdminToken();
+    }
+
+    @SuppressWarnings("unchecked")
+    private String refreshAdminToken() {
         String tokenUrl = keycloakUrl + "/realms/" + realm + "/protocol/openid-connect/token";
         MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
         form.add("grant_type", "client_credentials");
@@ -413,10 +415,51 @@ public class AuthController {
                 .body(form)
                 .retrieve()
                 .body(Map.class);
-        return (String) tokens.get("access_token");
+        String accessToken = (String) tokens.get("access_token");
+        Object expiresInObj = tokens.get("expires_in");
+        long expiresInSec = expiresInObj instanceof Number n ? n.longValue() : 60L;
+        long expiresAt = System.currentTimeMillis() + expiresInSec * 1000L;
+        cachedAdminToken.set(new TokenWithExpiry(accessToken, expiresAt));
+        return accessToken;
     }
 
-    private void createKeycloakUser(String adminToken, String username, String email, String password) {
+    /**
+     * Run a single privileged Keycloak admin call. Retries once with a freshly-minted
+     * admin token if Keycloak returns 401, so a rotated {@code gateway-admin} client
+     * secret or a token revoked mid-cache is recovered transparently on the next call.
+     */
+    private void executeAdminCall(Consumer<String> action) {
+        try {
+            action.accept(getAdminToken());
+        } catch (RestClientResponseException e) {
+            if (e.getStatusCode().value() == 401) {
+                cachedAdminToken.set(null);
+                action.accept(refreshAdminToken());
+                return;
+            }
+            throw e;
+        }
+    }
+
+    private void adminPut(String uri, Object body) {
+        executeAdminCall(adminToken -> restClient.put()
+                .uri(uri)
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + adminToken)
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(body)
+                .retrieve()
+                .toBodilessEntity());
+    }
+
+    private void adminDelete(String uri) {
+        executeAdminCall(adminToken -> restClient.delete()
+                .uri(uri)
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + adminToken)
+                .retrieve()
+                .toBodilessEntity());
+    }
+
+    private void createKeycloakUser(String username, String email, String password) {
         String usersUrl = keycloakUrl + "/admin/realms/" + realm + "/users";
         Map<String, Object> credential = Map.of("type", "password", "value", password, "temporary", false);
         Map<String, Object> user = new LinkedHashMap<>();
@@ -427,31 +470,28 @@ public class AuthController {
         user.put("requiredActions", List.of());
         user.put("credentials", List.of(credential));
 
-        var createResponse = restClient.post()
-                .uri(usersUrl)
-                .header(HttpHeaders.AUTHORIZATION, "Bearer " + adminToken)
-                .contentType(MediaType.APPLICATION_JSON)
-                .body(user)
-                .retrieve()
-                .toBodilessEntity();
+        AtomicReference<URI> locationRef = new AtomicReference<>();
+        executeAdminCall(adminToken -> {
+            var createResponse = restClient.post()
+                    .uri(usersUrl)
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + adminToken)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(user)
+                    .retrieve()
+                    .toBodilessEntity();
+            locationRef.set(createResponse.getHeaders().getLocation());
+        });
 
-        // Extract userId from Location header and clear any realm-default required actions
-        var location = createResponse.getHeaders().getLocation();
+        URI location = locationRef.get();
         log.info("User created. Location header: {}", location);
         if (location != null) {
             String userId = location.getPath().substring(location.getPath().lastIndexOf('/') + 1);
             log.info("Clearing required actions for userId: {}", userId);
             Map<String, Object> patch = Map.of("requiredActions", List.of());
-            restClient.put()
-                    .uri(keycloakUrl + "/admin/realms/" + realm + "/users/" + userId)
-                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + adminToken)
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .body(patch)
-                    .retrieve()
-                    .toBodilessEntity();
+            adminPut(keycloakUrl + "/admin/realms/" + realm + "/users/" + userId, patch);
             log.info("Required actions cleared for userId: {}", userId);
         } else {
-            log.warn("No Location header returned — cannot clear required actions");
+            log.warn("No Location header returned, cannot clear required actions");
         }
     }
 
@@ -533,13 +573,19 @@ public class AuthController {
         );
     }
 
-    @SuppressWarnings("unchecked")
-    private Map<?, ?> parseJwtPayload(String token) {
+    /**
+     * Validate the token against the realm JWKS (signature, exp, nbf) and return
+     * its claims. Empty map signals "untrusted or malformed token" so callers can
+     * reject with 401 without distinguishing the specific failure mode.
+     */
+    private Map<String, Object> parseJwtPayload(String token) {
+        if (token == null || token.isBlank()) {
+            return Map.of();
+        }
         try {
-            String[] parts = token.split("\\.");
-            byte[] payload = Base64.getUrlDecoder().decode(parts[1]);
-            return objectMapper.readValue(payload, Map.class);
-        } catch (Exception e) {
+            Jwt jwt = jwtDecoder.decode(token);
+            return jwt.getClaims();
+        } catch (JwtException e) {
             return Map.of();
         }
     }
