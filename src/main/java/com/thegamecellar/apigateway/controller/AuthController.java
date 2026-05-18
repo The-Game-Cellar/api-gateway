@@ -172,26 +172,6 @@ public class AuthController {
         }
     }
 
-    @PostMapping("/callback")
-    public ResponseEntity<?> callback(@RequestBody Map<String, String> body, HttpServletResponse response) {
-        MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
-        form.add("grant_type", "authorization_code");
-        form.add("client_id", clientId);
-        form.add("code", body.get("code"));
-        form.add("redirect_uri", body.get("redirectUri"));
-        if (body.get("codeVerifier") != null) {
-            form.add("code_verifier", body.get("codeVerifier"));
-        }
-
-        try {
-            Map<?, ?> tokens = callKeycloak(form);
-            setAuthCookies(response, tokens);
-            return ResponseEntity.ok(extractUserInfo(tokens));
-        } catch (RestClientResponseException e) {
-            return ResponseEntity.status(401).body(Map.of("error", "Authorization code exchange failed"));
-        }
-    }
-
     @PutMapping("/change-password")
     public ResponseEntity<?> changePassword(@RequestBody Map<String, String> body,
                                             HttpServletRequest request) {
