@@ -208,7 +208,7 @@ public class AuthController {
             adminPut(keycloakUrl + "/admin/realms/" + realm + "/users/" + userId + "/reset-password", credential);
             return ResponseEntity.ok(Map.of("message", "Password updated"));
         } catch (RestClientResponseException e) {
-            log.error("Change password Keycloak error: status={} body={}", e.getStatusCode(), e.getResponseBodyAsString());
+            log.error("Change password Keycloak error: status={}", e.getStatusCode());
             return ResponseEntity.status(400).body(Map.of("error", "Password update failed. Check requirements and try again."));
         } catch (Exception e) {
             log.error("Change password unexpected error", e);
