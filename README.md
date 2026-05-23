@@ -47,6 +47,8 @@ The gateway is the only service the frontend talks to. It forwards the user's JW
 | Path                          | Target Service             |
 |-------------------------------|----------------------------|
 | `/api/v1/games/**`            | Game Service (8081)        |
+| `/api/v1/platforms/**`        | Game Service (8081)        |
+| `/api/v1/admin/**`            | Game Service (8081)        |
 | `/api/v1/library/**`          | Library Service (8082)     |
 | `/api/v1/recommendations/**`  | Recommendation Service (8083) |
 
