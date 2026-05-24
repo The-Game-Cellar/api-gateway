@@ -16,14 +16,7 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.boot.test.context.SpringBootTest.WebEnvironment.RANDOM_PORT;
 
-/**
- * Integration tests for the full request flow through the API Gateway.
- * All tests are @Disabled because they require Keycloak (:8080) and
- * Game Service (:8081) to be running.
- *
- * To run manually:
- *   mvn test -Dtest=FullFlowIntegrationTest -DfailIfNoTests=false
- */
+// @Disabled — requires live Keycloak (:8080) + Game Service (:8081). Run: mvn test -Dtest=FullFlowIntegrationTest
 @SpringBootTest(webEnvironment = RANDOM_PORT)
 @TestPropertySource(locations = "classpath:application-test.properties")
 class FullFlowIntegrationTest {
@@ -96,9 +89,6 @@ class FullFlowIntegrationTest {
         return "http://localhost:" + port + path;
     }
 
-    /**
-     * Fetches a real JWT from Keycloak using the Resource Owner Password Credentials flow.
-     */
     @SuppressWarnings("unchecked")
     private String fetchKeycloakToken() {
         MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
