@@ -13,11 +13,6 @@ import org.springframework.web.filter.OncePerRequestFilter;
 import java.io.IOException;
 import java.util.UUID;
 
-/**
- * Reads or generates an {@code X-Request-ID} for every request, places it in
- * SLF4J MDC under {@code requestId} so log lines carry the id, and echoes it
- * back on the response so clients can correlate.
- */
 @Component
 @Order(Ordered.HIGHEST_PRECEDENCE)
 public class RequestIdFilter extends OncePerRequestFilter {
@@ -33,8 +28,7 @@ public class RequestIdFilter extends OncePerRequestFilter {
         if (id == null || id.isBlank()) {
             id = UUID.randomUUID().toString().substring(0, 8);
         } else {
-            // Strip CR / LF / TAB so attacker-supplied header cannot forge log lines via the
-            // %X{requestId} MDC pattern, then cap length so a runaway value cannot fill log lines.
+            // Strip CR/LF/TAB + cap length so attacker-supplied header cannot forge log lines via MDC.
             id = id.replaceAll("[\\r\\n\\t]", "_");
             if (id.length() > MAX_LENGTH) id = id.substring(0, MAX_LENGTH);
         }

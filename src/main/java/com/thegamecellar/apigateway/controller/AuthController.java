@@ -128,7 +128,7 @@ public class AuthController {
                         .retrieve()
                         .toBodilessEntity();
             } catch (Exception ignored) {
-                // Best-effort revocation. Always clear cookies regardless.
+                // Best-effort revoke; cookies cleared regardless.
             }
         }
         clearAuthCookies(response);
@@ -300,8 +300,7 @@ public class AuthController {
         }
 
         try {
-            // Step 1: purge user data from library_db.
-            // If this fails, Keycloak account stays intact and user can retry.
+            // Purge library first so a failure leaves the Keycloak account intact and retryable.
             try {
                 restClient.delete()
                         .uri(libraryServiceUrl + "/api/v1/library/account")
@@ -314,11 +313,7 @@ public class AuthController {
                 return ResponseEntity.status(502).body(Map.of("error", "Could not purge library data, try again"));
             }
 
-            // Step 2: delete the Keycloak user. After this the access token
-            // becomes orphaned and the next refresh will fail.
             adminDelete(keycloakUrl + "/admin/realms/" + realm + "/users/" + userId);
-
-            // Step 3: clear cookies so the now-stale access token isn't reused.
             clearAuthCookies(response);
             return ResponseEntity.ok(Map.of("message", "Account deleted"));
         } catch (RestClientResponseException e) {
@@ -403,11 +398,7 @@ public class AuthController {
         return accessToken;
     }
 
-    /**
-     * Run a single privileged Keycloak admin call. Retries once with a freshly-minted
-     * admin token if Keycloak returns 401, so a rotated {@code gateway-admin} client
-     * secret or a token revoked mid-cache is recovered transparently on the next call.
-     */
+    // Retry once on 401 so a rotated gateway-admin secret or revoked cached token recovers transparently.
     private void executeAdminCall(Consumer<String> action) {
         try {
             action.accept(getAdminToken());
@@ -553,11 +544,7 @@ public class AuthController {
         );
     }
 
-    /**
-     * Validate the token against the realm JWKS (signature, exp, nbf) and return
-     * its claims. Empty map signals "untrusted or malformed token" so callers can
-     * reject with 401 without distinguishing the specific failure mode.
-     */
+    // Empty map = untrusted or malformed; callers reject with 401 without distinguishing the cause.
     private Map<String, Object> parseJwtPayload(String token) {
         if (token == null || token.isBlank()) {
             return Map.of();

@@ -15,13 +15,7 @@ import org.springframework.web.servlet.HandlerInterceptor;
 
 import java.time.Duration;
 
-/**
- * Per-user rate limit on /api/v1/recommendations/**. Each request triggers up to
- * 5–10 downstream calls to Game Service + Library Service, so flooding this endpoint
- * amplifies load on every backend service. Bucket key is the JWT sub claim
- * (per-authenticated-user); falls back to client IP for unauthenticated requests
- * even though those should already be rejected by Spring Security.
- */
+// Per-user limit; one request fans out to 5-10 downstream calls so flooding amplifies backend load.
 @Component
 public class RecommendationRateLimitInterceptor implements HandlerInterceptor {
 
