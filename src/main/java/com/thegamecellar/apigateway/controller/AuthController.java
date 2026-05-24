@@ -128,7 +128,7 @@ public class AuthController {
                         .retrieve()
                         .toBodilessEntity();
             } catch (Exception ignored) {
-                // Best-effort revocation — always clear cookies regardless
+                // Best-effort revocation. Always clear cookies regardless.
             }
         }
         clearAuthCookies(response);
@@ -311,7 +311,7 @@ public class AuthController {
             } catch (RestClientResponseException e) {
                 log.error("Account delete: library purge failed for userId={}: status={} body={}",
                         userId, e.getStatusCode(), e.getResponseBodyAsString());
-                return ResponseEntity.status(502).body(Map.of("error", "Could not purge library data — try again"));
+                return ResponseEntity.status(502).body(Map.of("error", "Could not purge library data, try again"));
             }
 
             // Step 2: delete the Keycloak user. After this the access token
