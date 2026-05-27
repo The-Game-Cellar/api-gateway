@@ -4,6 +4,8 @@ import jakarta.servlet.http.Cookie;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.Ordered;
+import org.springframework.core.annotation.Order;
 import org.springframework.web.servlet.function.HandlerFilterFunction;
 import org.springframework.web.servlet.function.RouterFunction;
 import org.springframework.web.servlet.function.ServerRequest;
@@ -72,6 +74,18 @@ public class GatewayRoutesConfig {
     public RouterFunction<ServerResponse> recommendationServiceRoute() {
         return route("recommendation-service")
                 .route(path("/api/v1/recommendations/**"), http())
+                .filter(cookieToBearerHeader())
+                .before(uri(recommendationServiceUrl))
+                .build();
+    }
+
+    // @Order ensures this more-specific prefix wins over gameServiceRoute's broader /api/v1/admin/**.
+    // RouterFunction bean creation order alone is not guaranteed by Spring.
+    @Bean
+    @Order(Ordered.HIGHEST_PRECEDENCE)
+    public RouterFunction<ServerResponse> recommendationAdminRoute() {
+        return route("recommendation-admin")
+                .route(path("/api/v1/admin/rec/**"), http())
                 .filter(cookieToBearerHeader())
                 .before(uri(recommendationServiceUrl))
                 .build();

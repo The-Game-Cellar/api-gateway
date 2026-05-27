@@ -48,9 +48,12 @@ The gateway is the only service the frontend talks to. It forwards the user's JW
 |-------------------------------|----------------------------|
 | `/api/v1/games/**`            | Game Service (8081)        |
 | `/api/v1/platforms/**`        | Game Service (8081)        |
+| `/api/v1/admin/rec/**`        | Recommendation Service (8083). `@Order(HIGHEST_PRECEDENCE)` so this prefix wins over the broader `/api/v1/admin/**` route below. |
 | `/api/v1/admin/**`            | Game Service (8081)        |
 | `/api/v1/library/**`          | Library Service (8082)     |
 | `/api/v1/recommendations/**`  | Recommendation Service (8083) |
+
+`/internal/**` paths on downstream services are intentionally not routed here. Service-to-service calls go directly over the docker network with the `X-Internal-Token` shared secret.
 
 ### Handled locally
 
@@ -79,6 +82,10 @@ The gateway is the only service the frontend talks to. It forwards the user's JW
 | `RECOMMENDATION_SERVICE_URL`   | `http://localhost:8083`                       | Downstream service                                                 |
 | `ALLOWED_ORIGINS`              | `http://localhost:5173`                       | CORS whitelist                                                     |
 | `COOKIE_SECURE`                | `false`                                       | Set to `true` in production                                        |
+| `RECOMMENDATION_RATELIMIT_DISTRIBUTED` | `true`                                | Property `recommendation.ratelimit.distributed`. When `true`, Bucket4j uses Redis (`bucket4j_jdk17-lettuce`). When `false`, falls back to in-memory Caffeine (single-instance ceiling). |
+| `REDIS_HOST`                   | `localhost`                                   | Redis host for distributed rate-limit buckets                      |
+| `REDIS_PORT`                   | `6379`                                        | Redis port                                                         |
+| `REDIS_PASSWORD`               | (required when Redis used)                    | Redis password                                                     |
 
 Values are loaded from a root-level `.env` file in development. Secrets must never be hardcoded.
 
