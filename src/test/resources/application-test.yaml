@@ -1,0 +1,6 @@
+# Test profile defaults. Distributed rate-limit disabled so unit + context-load tests
+# do not require a live Redis instance. Real integration tests (FullFlowIntegrationTest)
+# pick up local application-test.properties overrides if present.
+ratelimit:
+  distributed:
+    enabled: false

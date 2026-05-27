@@ -16,9 +16,11 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.boot.test.context.SpringBootTest.WebEnvironment.RANDOM_PORT;
 
-// @Disabled — requires live Keycloak (:8080) + Game Service (:8081). Run: mvn test -Dtest=FullFlowIntegrationTest
+// @Disabled: requires live Keycloak (:8080) + Game Service (:8081). Run: mvn test -Dtest=FullFlowIntegrationTest
 @SpringBootTest(webEnvironment = RANDOM_PORT)
-@TestPropertySource(locations = "classpath:application-test.properties")
+@TestPropertySource(
+        locations = "classpath:application-test.properties",
+        properties = "recommendation.ratelimit.distributed=false")
 class FullFlowIntegrationTest {
 
     private static final String GAMES_GENRES_PATH = "/api/v1/games/genres";
