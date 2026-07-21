@@ -30,6 +30,12 @@ public class LoginRateLimitInterceptor implements HandlerInterceptor {
     @Autowired(required = false)
     private ProxyManager<String> proxyManager;
 
+    private final ClientIpResolver clientIpResolver;
+
+    public LoginRateLimitInterceptor(ClientIpResolver clientIpResolver) {
+        this.clientIpResolver = clientIpResolver;
+    }
+
     private final Cache<String, Bucket> localBuckets = Caffeine.newBuilder()
             .expireAfterAccess(Duration.ofMinutes(15))
             .maximumSize(10_000)
@@ -37,7 +43,7 @@ public class LoginRateLimitInterceptor implements HandlerInterceptor {
 
     @Override
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) throws Exception {
-        String ip = getClientIp(request);
+        String ip = clientIpResolver.resolve(request);
         String key = "ratelimit:login:" + ip;
         Bucket bucket = resolveBucket(key);
 
@@ -66,13 +72,5 @@ public class LoginRateLimitInterceptor implements HandlerInterceptor {
                         .refillIntervally(maxRequests, Duration.ofSeconds(windowSeconds))
                         .build())
                 .build();
-    }
-
-    private String getClientIp(HttpServletRequest request) {
-        String forwarded = request.getHeader("X-Forwarded-For");
-        if (forwarded != null && !forwarded.isBlank()) {
-            return forwarded.split(",")[0].trim();
-        }
-        return request.getRemoteAddr();
     }
 }
