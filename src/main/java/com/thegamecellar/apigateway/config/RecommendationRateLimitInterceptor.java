@@ -32,6 +32,12 @@ public class RecommendationRateLimitInterceptor implements HandlerInterceptor {
     @Autowired(required = false)
     private ProxyManager<String> proxyManager;
 
+    private final ClientIpResolver clientIpResolver;
+
+    public RecommendationRateLimitInterceptor(ClientIpResolver clientIpResolver) {
+        this.clientIpResolver = clientIpResolver;
+    }
+
     private final Cache<String, Bucket> localBuckets = Caffeine.newBuilder()
             .expireAfterAccess(Duration.ofMinutes(15))
             .maximumSize(10_000)
@@ -75,14 +81,6 @@ public class RecommendationRateLimitInterceptor implements HandlerInterceptor {
             String sub = jwt.getToken().getSubject();
             if (sub != null && !sub.isBlank()) return "user:" + sub;
         }
-        return "ip:" + getClientIp(request);
-    }
-
-    private String getClientIp(HttpServletRequest request) {
-        String forwarded = request.getHeader("X-Forwarded-For");
-        if (forwarded != null && !forwarded.isBlank()) {
-            return forwarded.split(",")[0].trim();
-        }
-        return request.getRemoteAddr();
+        return "ip:" + clientIpResolver.resolve(request);
     }
 }

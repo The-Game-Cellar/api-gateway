@@ -86,6 +86,7 @@ The gateway is the only service the frontend talks to. It forwards the user's JW
 | `REDIS_HOST`                   | `localhost`                                   | Redis host for distributed rate-limit buckets                      |
 | `REDIS_PORT`                   | `6379`                                        | Redis port                                                         |
 | `REDIS_PASSWORD`               | (required when Redis used)                    | Redis password                                                     |
+| `RATE_LIMIT_TRUSTED_PROXIES`   | (empty)                                       | Comma-separated IPs/CIDRs of proxies allowed to set `X-Forwarded-For`. Empty means the header is ignored and the socket address is used. Set to the edge proxy ranges (e.g. Cloudflare) when deployed behind one. |
 
 Values are loaded from a root-level `.env` file in development. Secrets must never be hardcoded.
 
