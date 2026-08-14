@@ -1,6 +1,11 @@
-# Test profile defaults. Distributed rate-limit disabled so unit + context-load tests
-# do not require a live Redis instance. Real integration tests (FullFlowIntegrationTest)
-# pick up local application-test.properties overrides if present.
-ratelimit:
-  distributed:
-    enabled: false
+# Test profile defaults. Tracked in git so a clean checkout builds without the
+# gitignored application-test.properties. That file stays optional and only supplies
+# real Keycloak credentials for the manual FullFlowIntegrationTest run.
+
+# Distributed rate limiting off so context-load tests do not need a live Redis.
+recommendation:
+  ratelimit:
+    distributed: false
+
+# Placeholder value only. The real secret is supplied via environment at runtime.
+GATEWAY_ADMIN_CLIENT_SECRET: test-dummy-secret
