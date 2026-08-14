@@ -6,7 +6,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.http.*;
-import org.springframework.test.context.TestPropertySource;
+import org.springframework.test.context.ActiveProfiles;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.RestClient;
@@ -17,10 +17,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.boot.test.context.SpringBootTest.WebEnvironment.RANDOM_PORT;
 
 // @Disabled: requires live Keycloak (:8080) + Game Service (:8081). Run: mvn test -Dtest=FullFlowIntegrationTest
+// Profile-based config rather than a hard classpath location, so a checkout without the
+// gitignored application-test.properties still loads the context instead of erroring.
 @SpringBootTest(webEnvironment = RANDOM_PORT)
-@TestPropertySource(
-        locations = "classpath:application-test.properties",
-        properties = "recommendation.ratelimit.distributed=false")
+@ActiveProfiles("test")
 class FullFlowIntegrationTest {
 
     private static final String GAMES_GENRES_PATH = "/api/v1/games/genres";
@@ -31,13 +31,15 @@ class FullFlowIntegrationTest {
     @LocalServerPort
     private int port;
 
-    @Value("${keycloak.test.client-secret}")
+    // Defaults keep the context loadable without local credentials. The disabled tests
+    // below only pass with real values from application-test.properties.
+    @Value("${keycloak.test.client-secret:}")
     private String clientSecret;
 
-    @Value("${keycloak.test.username}")
+    @Value("${keycloak.test.username:testuser}")
     private String testUsername;
 
-    @Value("${keycloak.test.password}")
+    @Value("${keycloak.test.password:testuser}")
     private String testPassword;
 
     @Test
