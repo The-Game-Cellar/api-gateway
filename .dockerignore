@@ -1,9 +1,35 @@
+# Build output
 target/
+
+# VCS and editor state
 .git/
+.gitattributes
 .idea/
+.vscode/
 *.iml
+
+# Agent and contributor docs. Not needed to build.
+.claude/
+AGENTS.md
+CLAUDE.md
+HELP.md
+README.md
+docs/
+
+# Credentials and key material. .gitignore does not stop COPY from pulling a file
+# into a build layer, so anything sensitive on disk has to be excluded here too.
 .env
 .env.*
 !.env.example
-README.md
-docs/
+**/application-test.properties
+*.pem
+*.key
+*.crt
+*.p12
+*.jks
+
+# Logs and OS noise
+*.log
+*.stackdump
+.DS_Store
+Thumbs.db
