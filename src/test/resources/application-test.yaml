@@ -1,6 +1,5 @@
-# Test profile defaults. Tracked in git so a clean checkout builds without the
-# gitignored application-test.properties. That file stays optional and only supplies
-# real Keycloak credentials for the manual FullFlowIntegrationTest run.
+# Test profile defaults. Tracked in git so a clean checkout builds without any
+# local, gitignored override file.
 
 # Distributed rate limiting off so context-load tests do not need a live Redis.
 recommendation:

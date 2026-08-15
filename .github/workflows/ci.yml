@@ -1,0 +1,17 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  ci:
+    # Pipeline lives in the org .github repo so the four Maven services cannot drift.
+    uses: The-Game-Cellar/.github/.github/workflows/maven-service.yml@main
+    permissions:
+      contents: read
+      packages: write
+    with:
+      image-name: api-gateway

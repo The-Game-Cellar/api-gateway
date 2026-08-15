@@ -2,6 +2,7 @@
 
 > Single entry point for The Game Cellar frontend. Handles routing, JWT validation, CORS, and the local auth endpoints (login, register, refresh, logout, change-email, change-password).
 
+[![CI](https://github.com/The-Game-Cellar/api-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/The-Game-Cellar/api-gateway/actions/workflows/ci.yml)
 ![Java](https://img.shields.io/badge/Java-17-orange)
 ![Spring Boot](https://img.shields.io/badge/Spring%20Boot-4.0-brightgreen)
 ![License](https://img.shields.io/badge/License-MIT-blue)
@@ -120,7 +121,7 @@ docker compose up api-gateway
 ./mvnw test
 ```
 
-Covers the auth controller, JWT validation filter, rate-limit interceptor, and an end-to-end `FullFlowIntegrationTest`.
+Covers Spring context startup and `ClientIpResolver` (proxy-header parsing and spoofing rejection). Route predicates, JWT rejection paths, CORS and the auth endpoints are not yet covered.
 
 ## Security
 
