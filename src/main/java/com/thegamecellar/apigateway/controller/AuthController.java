@@ -58,6 +58,12 @@ public class AuthController {
     @Value("${COOKIE_SECURE:false}")
     private boolean cookieSecure;
 
+    // Keycloak's own registrationAllowed realm flag does not gate this controller:
+    // createKeycloakUser posts to the Admin REST API, which ignores it. This is the
+    // only switch that actually closes sign-up.
+    @Value("${REGISTRATION_ENABLED:true}")
+    private boolean registrationEnabled;
+
     @Value("${GATEWAY_ADMIN_CLIENT_ID:gateway-admin}")
     private String adminClientId;
 
@@ -137,6 +143,10 @@ public class AuthController {
 
     @PostMapping("/register")
     public ResponseEntity<?> register(@RequestBody Map<String, String> body, HttpServletResponse response) {
+        if (!registrationEnabled) {
+            return ResponseEntity.status(403).body(Map.of("error", "Registration is currently closed"));
+        }
+
         String username = body.get("username");
         String email    = body.get("email");
         String password = body.get("password");
