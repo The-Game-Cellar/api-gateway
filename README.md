@@ -83,6 +83,7 @@ The gateway is the only service the frontend talks to. It forwards the user's JW
 | `RECOMMENDATION_SERVICE_URL`   | `http://localhost:8083`                       | Downstream service                                                 |
 | `ALLOWED_ORIGINS`              | `http://localhost:5173`                       | CORS whitelist                                                     |
 | `COOKIE_SECURE`                | `false`                                       | Set to `true` in production                                        |
+| `REGISTRATION_ENABLED`         | `true`                                        | Set to `false` to close sign-up. `POST /api/v1/auth/register` then returns 403 before contacting Keycloak. Keycloak's own `registrationAllowed` realm flag does not close this route: registration goes through the Admin REST API, which ignores that flag. |
 | `RECOMMENDATION_RATELIMIT_DISTRIBUTED` | `true`                                | Property `recommendation.ratelimit.distributed`. When `true`, Bucket4j uses Redis (`bucket4j_jdk17-lettuce`). When `false`, falls back to in-memory Caffeine (single-instance ceiling). |
 | `REDIS_HOST`                   | `localhost`                                   | Redis host for distributed rate-limit buckets                      |
 | `REDIS_PORT`                   | `6379`                                        | Redis port                                                         |
