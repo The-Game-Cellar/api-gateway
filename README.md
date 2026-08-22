@@ -1,6 +1,6 @@
 # API Gateway
 
-> Single entry point for The Game Cellar frontend. Handles routing, JWT validation, CORS, and the local auth endpoints (login, register, refresh, logout, change-email, change-password).
+> Single entry point for The Game Cellar frontend. Handles routing, JWT validation, CORS, and the local auth endpoints (authorize, callback, refresh, logout, change-email, change-password).
 
 [![CI](https://github.com/The-Game-Cellar/api-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/The-Game-Cellar/api-gateway/actions/workflows/ci.yml)
 ![Java](https://img.shields.io/badge/Java-17-orange)
@@ -13,9 +13,9 @@
 
 - Route `/api/v1/games/**`, `/api/v1/library/**`, and `/api/v1/recommendations/**` to the matching backend service.
 - Validate JWTs against the Keycloak realm via its JWKS endpoint.
-- Host the local auth controller: password-grant login, custom registration through the Keycloak Admin API, refresh-token rotation, logout, change-email, change-password.
+- Host the local auth controller: it starts and completes the Authorization Code flow with PKCE, rotates refresh tokens, logs out, and changes email and password through the Keycloak Admin API.
 - Issue and clear HttpOnly auth cookies so the frontend never holds raw JWTs in JavaScript.
-- Apply per-IP rate limiting on `/auth/login` via Bucket4j.
+- Apply per-IP rate limiting on `/auth/authorize` via Bucket4j.
 
 ## Position in the System
 
@@ -62,8 +62,6 @@ The gateway is the only service the frontend talks to. It forwards the user's JW
 |--------|-----------------------------------|-------------------------------------------------------------|
 | GET    | `/api/v1/auth/authorize`          | Starts Authorization Code + PKCE. Stores verifier, state and nonce in the session, redirects to Keycloak. `?register=true` opens the sign-up page instead of the login page. |
 | GET    | `/api/v1/auth/callback`           | Keycloak redirect target. Validates state and nonce, exchanges the code, sets the same cookies as login. |
-| POST   | `/api/v1/auth/login`              | Password grant. Sets HttpOnly access + refresh cookies.     |
-| POST   | `/api/v1/auth/register`           | Creates a Keycloak user via Admin API, then auto-logs in.   |
 | POST   | `/api/v1/auth/logout`             | Revokes the refresh token and clears cookies.               |
 | POST   | `/api/v1/auth/refresh`            | Refresh-token grant. Rotates cookies.                       |
 | GET    | `/api/v1/auth/me`                 | Reads the access-token cookie and returns userInfo.         |
@@ -76,11 +74,12 @@ The gateway is the only service the frontend talks to. It forwards the user's JW
 |--------------------------------|-----------------------------------------------|--------------------------------------------------------------------|
 | `GATEWAY_PORT`                 | `8000`                                        | Service port                                                       |
 | `KEYCLOAK_AUTH_SERVER_URL`     | `http://localhost:8080`                       | Keycloak base URL for JWKS and server-side token calls             |
+| `KEYCLOAK_ISSUER_URI`          | `http://localhost:8080/realms/game-cellar`    | Expected `iss` on every incoming token. Must be the origin the browser reaches, not the one the gateway dials |
 | `KEYCLOAK_PUBLIC_URL`          | value of `KEYCLOAK_AUTH_SERVER_URL`           | Browser-facing Keycloak origin used for the authorization redirect |
 | `AUTH_REDIRECT_URI`            | `http://localhost:8000/api/v1/auth/callback`  | Must match a Valid Redirect URI on the realm client exactly        |
 | `APP_BASE_URL`                 | `http://localhost:5173`                       | Where the gateway sends the browser after a completed login        |
 | `KEYCLOAK_REALM`               | `game-cellar`                                 | Realm name                                                         |
-| `KEYCLOAK_CLIENT_ID`           | `game-cellar-client`                          | Public client for both the password grant and the code flow        |
+| `KEYCLOAK_CLIENT_ID`           | `game-cellar-client`                          | Public client for the code flow, and the expected `azp` on incoming tokens |
 | `GATEWAY_ADMIN_CLIENT_ID`      | `gateway-admin`                               | Service-account client for user registration                       |
 | `GATEWAY_ADMIN_CLIENT_SECRET`  | _none_                                        | Service-account secret (must have `realm-management/manage-users`) |
 | `GAME_SERVICE_URL`             | `http://localhost:8081`                       | Downstream service                                                 |
@@ -88,7 +87,6 @@ The gateway is the only service the frontend talks to. It forwards the user's JW
 | `RECOMMENDATION_SERVICE_URL`   | `http://localhost:8083`                       | Downstream service                                                 |
 | `ALLOWED_ORIGINS`              | `http://localhost:5173`                       | CORS whitelist                                                     |
 | `COOKIE_SECURE`                | `false`                                       | Set to `true` in production                                        |
-| `REGISTRATION_ENABLED`         | `true`                                        | Set to `false` to close sign-up. `POST /api/v1/auth/register` then returns 403 before contacting Keycloak. Keycloak's own `registrationAllowed` realm flag does not close this route: registration goes through the Admin REST API, which ignores that flag. |
 | `RECOMMENDATION_RATELIMIT_DISTRIBUTED` | `true`                                | Property `recommendation.ratelimit.distributed`. When `true`, Bucket4j uses Redis (`bucket4j_jdk17-lettuce`). When `false`, falls back to in-memory Caffeine (single-instance ceiling). |
 | `REDIS_HOST`                   | `localhost`                                   | Redis host for distributed rate-limit buckets                      |
 | `REDIS_PORT`                   | `6379`                                        | Redis port                                                         |

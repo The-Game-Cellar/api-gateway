@@ -36,8 +36,6 @@ import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.util.Base64;
 import java.util.Collections;
-import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
@@ -66,12 +64,6 @@ public class AuthController {
 
     @Value("${COOKIE_SECURE:false}")
     private boolean cookieSecure;
-
-    // Keycloak's own registrationAllowed realm flag does not gate this controller:
-    // createKeycloakUser posts to the Admin REST API, which ignores it. This is the
-    // only switch that actually closes sign-up.
-    @Value("${REGISTRATION_ENABLED:true}")
-    private boolean registrationEnabled;
 
     @Value("${GATEWAY_ADMIN_CLIENT_ID:gateway-admin}")
     private String adminClientId;
@@ -184,24 +176,6 @@ public class AuthController {
         }
     }
 
-    @PostMapping("/login")
-    public ResponseEntity<?> login(@RequestBody Map<String, String> body, HttpServletResponse response) {
-        MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
-        form.add("grant_type", "password");
-        form.add("client_id", clientId);
-        form.add("scope", "openid");
-        form.add("username", body.get("username"));
-        form.add("password", body.get("password"));
-
-        try {
-            Map<?, ?> tokens = callKeycloak(form);
-            setAuthCookies(response, tokens);
-            return ResponseEntity.ok(extractUserInfo(tokens));
-        } catch (RestClientResponseException e) {
-            return ResponseEntity.status(401).body(Map.of("error", "Invalid credentials"));
-        }
-    }
-
     @PostMapping("/refresh")
     public ResponseEntity<?> refresh(HttpServletRequest request, HttpServletResponse response) {
         String refreshToken = readCookie(request, "refresh_token");
@@ -245,47 +219,6 @@ public class AuthController {
         }
         clearAuthCookies(response);
         return ResponseEntity.ok(Map.of("message", "Logged out"));
-    }
-
-    @PostMapping("/register")
-    public ResponseEntity<?> register(@RequestBody Map<String, String> body, HttpServletResponse response) {
-        if (!registrationEnabled) {
-            return ResponseEntity.status(403).body(Map.of("error", "Registration is currently closed"));
-        }
-
-        String username = body.get("username");
-        String email    = body.get("email");
-        String password = body.get("password");
-
-        if (username == null || username.isBlank() ||
-            email    == null || email.isBlank()    ||
-            password == null || password.isBlank()) {
-            return ResponseEntity.badRequest().body(Map.of("error", "Username, email, and password are required"));
-        }
-
-        try {
-            createKeycloakUser(username, email, password);
-
-            MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
-            form.add("grant_type", "password");
-            form.add("client_id", clientId);
-            form.add("scope", "openid");
-            form.add("username", username);
-            form.add("password", password);
-
-            Map<?, ?> tokens = callKeycloak(form);
-            setAuthCookies(response, tokens);
-            return ResponseEntity.ok(extractUserInfo(tokens));
-        } catch (RestClientResponseException e) {
-            log.error("Registration Keycloak error: status={} body={}", e.getStatusCode(), e.getResponseBodyAsString());
-            if (e.getStatusCode().value() == 409) {
-                return ResponseEntity.status(409).body(Map.of("error", "Username or email already taken"));
-            }
-            return ResponseEntity.status(400).body(Map.of("error", "Registration failed. Check your details and try again."));
-        } catch (Exception e) {
-            log.error("Registration unexpected error", e);
-            return ResponseEntity.status(500).body(Map.of("error", "Registration failed. Please try again."));
-        }
     }
 
     @PutMapping("/change-password")
@@ -574,42 +507,6 @@ public class AuthController {
                 .header(HttpHeaders.AUTHORIZATION, "Bearer " + adminToken)
                 .retrieve()
                 .toBodilessEntity());
-    }
-
-    private void createKeycloakUser(String username, String email, String password) {
-        String usersUrl = keycloakUrl + "/admin/realms/" + realm + "/users";
-        Map<String, Object> credential = Map.of("type", "password", "value", password, "temporary", false);
-        Map<String, Object> user = new LinkedHashMap<>();
-        user.put("username", username);
-        user.put("email", email);
-        user.put("enabled", true);
-        user.put("emailVerified", true);
-        user.put("requiredActions", List.of());
-        user.put("credentials", List.of(credential));
-
-        AtomicReference<URI> locationRef = new AtomicReference<>();
-        executeAdminCall(adminToken -> {
-            var createResponse = restClient.post()
-                    .uri(usersUrl)
-                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + adminToken)
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .body(user)
-                    .retrieve()
-                    .toBodilessEntity();
-            locationRef.set(createResponse.getHeaders().getLocation());
-        });
-
-        URI location = locationRef.get();
-        log.info("User created. Location header: {}", location);
-        if (location != null) {
-            String userId = location.getPath().substring(location.getPath().lastIndexOf('/') + 1);
-            log.info("Clearing required actions for userId: {}", userId);
-            Map<String, Object> patch = Map.of("requiredActions", List.of());
-            adminPut(keycloakUrl + "/admin/realms/" + realm + "/users/" + userId, patch);
-            log.info("Required actions cleared for userId: {}", userId);
-        } else {
-            log.warn("No Location header returned, cannot clear required actions");
-        }
     }
 
     @SuppressWarnings("unchecked")
