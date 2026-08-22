@@ -60,6 +60,8 @@ The gateway is the only service the frontend talks to. It forwards the user's JW
 
 | Method | Path                              | Description                                                 |
 |--------|-----------------------------------|-------------------------------------------------------------|
+| GET    | `/api/v1/auth/authorize`          | Starts Authorization Code + PKCE. Stores verifier, state and nonce in the session, redirects to Keycloak. `?register=true` opens the sign-up page instead of the login page. |
+| GET    | `/api/v1/auth/callback`           | Keycloak redirect target. Validates state and nonce, exchanges the code, sets the same cookies as login. |
 | POST   | `/api/v1/auth/login`              | Password grant. Sets HttpOnly access + refresh cookies.     |
 | POST   | `/api/v1/auth/register`           | Creates a Keycloak user via Admin API, then auto-logs in.   |
 | POST   | `/api/v1/auth/logout`             | Revokes the refresh token and clears cookies.               |
@@ -73,9 +75,12 @@ The gateway is the only service the frontend talks to. It forwards the user's JW
 | Variable                       | Default                                       | Purpose                                                            |
 |--------------------------------|-----------------------------------------------|--------------------------------------------------------------------|
 | `GATEWAY_PORT`                 | `8000`                                        | Service port                                                       |
-| `KEYCLOAK_AUTH_SERVER_URL`     | `http://localhost:8080`                       | Keycloak base URL for JWKS                                         |
+| `KEYCLOAK_AUTH_SERVER_URL`     | `http://localhost:8080`                       | Keycloak base URL for JWKS and server-side token calls             |
+| `KEYCLOAK_PUBLIC_URL`          | value of `KEYCLOAK_AUTH_SERVER_URL`           | Browser-facing Keycloak origin used for the authorization redirect |
+| `AUTH_REDIRECT_URI`            | `http://localhost:8000/api/v1/auth/callback`  | Must match a Valid Redirect URI on the realm client exactly        |
+| `APP_BASE_URL`                 | `http://localhost:5173`                       | Where the gateway sends the browser after a completed login        |
 | `KEYCLOAK_REALM`               | `game-cellar`                                 | Realm name                                                         |
-| `KEYCLOAK_CLIENT_ID`           | `game-cellar-client`                          | Public client for password grant                                   |
+| `KEYCLOAK_CLIENT_ID`           | `game-cellar-client`                          | Public client for both the password grant and the code flow        |
 | `GATEWAY_ADMIN_CLIENT_ID`      | `gateway-admin`                               | Service-account client for user registration                       |
 | `GATEWAY_ADMIN_CLIENT_SECRET`  | _none_                                        | Service-account secret (must have `realm-management/manage-users`) |
 | `GAME_SERVICE_URL`             | `http://localhost:8081`                       | Downstream service                                                 |
