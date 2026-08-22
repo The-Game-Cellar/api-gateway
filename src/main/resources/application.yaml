@@ -1,5 +1,16 @@
 server:
   port: ${GATEWAY_PORT:8000}
+  servlet:
+    session:
+      # Only used to carry the PKCE verifier, state and nonce across the Keycloak
+      # round trip, so the window is short. SameSite must stay Lax: Strict would drop
+      # the cookie on the cross-site redirect back from Keycloak and every login would
+      # fail state validation.
+      timeout: 5m
+      cookie:
+        http-only: true
+        same-site: lax
+        secure: ${COOKIE_SECURE:false}
 
 springdoc:
   api-docs:
