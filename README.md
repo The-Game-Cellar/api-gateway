@@ -1,6 +1,6 @@
 # API Gateway
 
-> Single entry point for The Game Cellar frontend. Handles routing, JWT validation, CORS, and the local auth endpoints (authorize, callback, refresh, logout, change-email, change-password).
+> Single entry point for The Game Cellar frontend. Handles routing, JWT validation, CORS, and the local auth endpoints (authorize, callback, refresh, logout, account deletion). Passwords and email addresses are changed on Keycloak's own pages and never reach this service.
 
 [![CI](https://github.com/The-Game-Cellar/api-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/The-Game-Cellar/api-gateway/actions/workflows/ci.yml)
 ![Java](https://img.shields.io/badge/Java-17-orange)
@@ -60,13 +60,12 @@ The gateway is the only service the frontend talks to. It forwards the user's JW
 
 | Method | Path                              | Description                                                 |
 |--------|-----------------------------------|-------------------------------------------------------------|
-| GET    | `/api/v1/auth/authorize`          | Starts Authorization Code + PKCE. Stores verifier, state and nonce in the session, redirects to Keycloak. `?register=true` opens the sign-up page instead of the login page. |
-| GET    | `/api/v1/auth/callback`           | Keycloak redirect target. Validates state and nonce, exchanges the code, sets the same cookies as login. |
+| GET    | `/api/v1/auth/authorize`          | Starts Authorization Code + PKCE. Stores verifier, state, nonce and intent in the session, redirects to Keycloak. `?register=true` opens the sign-up page instead of the login page. `?intent=UPDATE_PASSWORD` and `?intent=UPDATE_EMAIL` add `kc_action` so Keycloak runs the change itself; `?intent=DELETE_ACCOUNT` only forces a fresh sign-in. Every intent other than a plain login sends `prompt=login` and `max_age=0`. |
+| GET    | `/api/v1/auth/callback`           | Keycloak redirect target. Validates state and nonce, exchanges the code, sets cookies. Routes on the stored intent: a login lands on the dashboard, an action lands on `/profile` carrying Keycloak's `kc_action_status`, and a completed re-authentication records a single-use marker for account deletion. |
 | POST   | `/api/v1/auth/logout`             | Revokes the refresh token and clears cookies.               |
 | POST   | `/api/v1/auth/refresh`            | Refresh-token grant. Rotates cookies.                       |
 | GET    | `/api/v1/auth/me`                 | Reads the access-token cookie and returns userInfo.         |
-| PUT    | `/api/v1/auth/change-password`    | Re-verifies current password, then admin reset-password.    |
-| PUT    | `/api/v1/auth/change-email`       | Re-verifies current password, then admin user update.       |
+| DELETE | `/api/v1/auth/account`            | Purges library data, then deletes the Keycloak user. Requires a re-authentication completed through `/authorize?intent=DELETE_ACCOUNT` within the last five minutes; takes no request body. |
 
 ## Configuration
 
