@@ -20,8 +20,6 @@ import org.springframework.util.MultiValueMap;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.PutMapping;
-import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -34,6 +32,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
+import java.time.Instant;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.Map;
@@ -94,13 +93,52 @@ public class AuthController {
     private static final String SESSION_CODE_VERIFIER = "pkce.code_verifier";
     private static final String SESSION_STATE = "oauth.state";
     private static final String SESSION_NONCE = "oidc.nonce";
+    private static final String SESSION_INTENT = "auth.intent";
+    private static final String SESSION_INTENT_REQUESTED_AT = "auth.intent_requested_at";
+    private static final String SESSION_EMAIL_BEFORE = "auth.email_before";
+
+    // How recently the user must have authenticated for a destructive action to be allowed.
+    // Read from auth_time, which survives token refresh, so this is time since the password
+    // was last entered rather than time since the last token was issued.
+    private static final long REAUTH_WINDOW_MS = 5 * 60 * 1000L;
+    private static final long AUTH_TIME_SKEW_MS = 30_000L;
 
     private record TokenWithExpiry(String token, long expiresAtEpochMillis) {}
+
+    /**
+     * What the browser left for, remembered across the redirect. Everything but LOGIN forces a
+     * fresh authentication; the two with a Keycloak action name let Keycloak own the form.
+     */
+    private enum AuthIntent {
+        LOGIN(null, null),
+        UPDATE_PASSWORD("UPDATE_PASSWORD", "password"),
+        UPDATE_EMAIL("UPDATE_EMAIL", "email"),
+        DELETE_ACCOUNT(null, "delete");
+
+        private final String keycloakAction;
+        private final String landingAction;
+
+        AuthIntent(String keycloakAction, String landingAction) {
+            this.keycloakAction = keycloakAction;
+            this.landingAction = landingAction;
+        }
+
+        // Anything unrecognised is a plain login, which grants nothing the caller did not already have.
+        static AuthIntent from(String raw) {
+            if (raw == null) return LOGIN;
+            for (AuthIntent intent : values()) {
+                if (intent.name().equalsIgnoreCase(raw)) return intent;
+            }
+            return LOGIN;
+        }
+    }
 
     @GetMapping("/authorize")
     public ResponseEntity<Void> authorize(
             @RequestParam(name = "register", defaultValue = "false") boolean register,
+            @RequestParam(name = "intent", required = false) String intentParam,
             HttpServletRequest request) {
+        AuthIntent intent = AuthIntent.from(intentParam);
         String codeVerifier = randomToken(32);
         String state = randomToken(32);
         String nonce = randomToken(32);
@@ -109,11 +147,21 @@ public class AuthController {
         session.setAttribute(SESSION_CODE_VERIFIER, codeVerifier);
         session.setAttribute(SESSION_STATE, state);
         session.setAttribute(SESSION_NONCE, nonce);
+        session.setAttribute(SESSION_INTENT, intent.name());
+        session.setAttribute(SESSION_INTENT_REQUESTED_AT, System.currentTimeMillis());
+        if (intent == AuthIntent.UPDATE_EMAIL) {
+            // Keycloak reports the same success whether it wrote the address or mailed a
+            // confirmation for it, so the only way to tell is to compare before and after.
+            String currentEmail = (String) parseJwtPayload(readCookie(request, "access_token")).get("email");
+            if (currentEmail != null) {
+                session.setAttribute(SESSION_EMAIL_BEFORE, currentEmail);
+            }
+        }
 
         // Same flow either way; the registrations endpoint just opens Keycloak's
         // sign-up form first and returns the browser to this callback afterwards.
         String endpoint = register ? "/registrations" : "/auth";
-        String authorizeUrl = UriComponentsBuilder
+        UriComponentsBuilder authorizeUrl = UriComponentsBuilder
                 .fromUriString(keycloakPublicUrl + "/realms/" + realm + "/protocol/openid-connect" + endpoint)
                 .queryParam("client_id", clientId)
                 .queryParam("response_type", "code")
@@ -122,23 +170,35 @@ public class AuthController {
                 .queryParam("state", state)
                 .queryParam("nonce", nonce)
                 .queryParam("code_challenge", codeChallenge(codeVerifier))
-                .queryParam("code_challenge_method", "S256")
-                .encode()
-                .toUriString();
+                .queryParam("code_challenge_method", "S256");
 
-        return redirect(authorizeUrl);
+        if (intent != AuthIntent.LOGIN) {
+            // Keycloak's own update forms never ask for the current password, and deletion is
+            // confirmed after the return, so nothing else forces the user to prove who they are.
+            // max_age is what makes auth_time mandatory in the id_token; prompt leaves it optional.
+            authorizeUrl.queryParam("prompt", "login").queryParam("max_age", 0);
+            if (intent.keycloakAction != null) {
+                authorizeUrl.queryParam("kc_action", intent.keycloakAction);
+            }
+        }
+
+        return redirect(authorizeUrl.encode().toUriString());
     }
 
     @GetMapping("/callback")
     public ResponseEntity<Void> callback(@RequestParam(required = false) String code,
                                          @RequestParam(required = false) String state,
                                          @RequestParam(required = false) String error,
+                                         @RequestParam(name = "kc_action_status", required = false) String kcActionStatus,
                                          HttpServletRequest request,
                                          HttpServletResponse response) {
         HttpSession session = request.getSession(false);
         String expectedState = sessionAttribute(session, SESSION_STATE);
         String codeVerifier = sessionAttribute(session, SESSION_CODE_VERIFIER);
         String expectedNonce = sessionAttribute(session, SESSION_NONCE);
+        AuthIntent intent = AuthIntent.from(sessionAttribute(session, SESSION_INTENT));
+        long requestedAt = sessionLong(session, SESSION_INTENT_REQUESTED_AT);
+        String emailBefore = sessionAttribute(session, SESSION_EMAIL_BEFORE);
         // Single use: a replayed code must not find a verifier waiting for it.
         if (session != null) {
             session.invalidate();
@@ -146,12 +206,21 @@ public class AuthController {
 
         if (error != null) {
             log.warn("Authorization callback returned error: {}", error);
-            return redirect(appBaseUrl + "/login?error=auth_failed");
+            return redirect(failureLanding(intent));
         }
+        // Keycloak ends the email-confirmation branch on its own page rather than returning a
+        // code, and applies the change later when the mailed link is followed. The browser then
+        // arrives here with nothing to exchange. Whoever already holds a refresh cookie is
+        // signed in, so telling them their sign-in failed would be wrong whatever the session
+        // still remembers. Anything carrying a code goes through the state check below.
+        if (code == null && state == null && readCookie(request, "refresh_token") != null) {
+            return completeOutOfBandReturn(intent, emailBefore, request, response);
+        }
+
         if (code == null || state == null || expectedState == null || codeVerifier == null
                 || !constantTimeEquals(state, expectedState)) {
             log.warn("Authorization callback rejected: missing code or state mismatch");
-            return redirect(appBaseUrl + "/login?error=auth_failed");
+            return redirect(failureLanding(intent));
         }
 
         MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
@@ -166,13 +235,42 @@ public class AuthController {
             Map<?, ?> idClaims = parseJwtPayload((String) tokens.get("id_token"));
             if (expectedNonce == null || !expectedNonce.equals(idClaims.get("nonce"))) {
                 log.warn("Authorization callback rejected: id_token nonce mismatch");
-                return redirect(appBaseUrl + "/login?error=auth_failed");
+                return redirect(failureLanding(intent));
             }
             setAuthCookies(response, tokens);
-            return redirect(appBaseUrl + "/dashboard");
+
+            if (intent == AuthIntent.LOGIN) {
+                return redirect(appBaseUrl + "/dashboard");
+            }
+
+            boolean fresh = isFreshAuthentication(idClaims, requestedAt);
+            if (intent == AuthIntent.DELETE_ACCOUNT) {
+                if (!fresh) {
+                    log.warn("Re-authentication before account deletion rejected: auth_time is stale or absent");
+                    return redirect(actionLanding(intent, "reauth_failed"));
+                }
+                // Nothing is recorded server-side: the cookies just set carry auth_time, and
+                // the delete endpoint reads its proof from there. A servlet session does not
+                // reliably survive this round trip, and a lost one would refuse a user who
+                // has just proved who they are.
+                return redirect(actionLanding(intent, "ready"));
+            }
+
+            if (!fresh) {
+                // The action has already run, so refusing here would be theatre. A stale auth_time
+                // means prompt=login did not take effect and the realm needs looking at.
+                log.warn("Action {} completed without a fresh authentication", intent);
+            }
+
+            String status = kcActionStatus != null ? kcActionStatus : "unknown";
+            if (intent == AuthIntent.UPDATE_EMAIL && "success".equals(status)) {
+                String emailAfter = (String) parseJwtPayload((String) tokens.get("access_token")).get("email");
+                status = emailBefore != null && emailBefore.equals(emailAfter) ? "pending" : "changed";
+            }
+            return redirect(actionLanding(intent, status));
         } catch (RestClientResponseException e) {
             log.error("Code exchange failed: status={}", e.getStatusCode());
-            return redirect(appBaseUrl + "/login?error=auth_failed");
+            return redirect(failureLanding(intent));
         }
     }
 
@@ -221,131 +319,21 @@ public class AuthController {
         return ResponseEntity.ok(Map.of("message", "Logged out"));
     }
 
-    @PutMapping("/change-password")
-    public ResponseEntity<?> changePassword(@RequestBody Map<String, String> body,
-                                            HttpServletRequest request) {
-        String currentPassword = body.get("currentPassword");
-        String newPassword     = body.get("newPassword");
-
-        if (currentPassword == null || currentPassword.isBlank() ||
-            newPassword     == null || newPassword.isBlank()) {
-            return ResponseEntity.badRequest().body(Map.of("error", "Current and new password are required"));
-        }
-
-        if (!isPasswordStrong(newPassword)) {
-            return ResponseEntity.badRequest().body(Map.of("error",
-                    "New password must be at least 8 characters and contain at least one letter and one digit"));
-        }
-
-        String accessToken = readCookie(request, "access_token");
-        if (accessToken == null || accessToken.isBlank()) {
-            return ResponseEntity.status(401).body(Map.of("error", "Not authenticated"));
-        }
-        Map<?, ?> claims = parseJwtPayload(accessToken);
-        String userId = (String) claims.get("sub");
-        String username = (String) claims.get("preferred_username");
-        if (userId == null || username == null) {
-            return ResponseEntity.status(401).body(Map.of("error", "Invalid token"));
-        }
-
-        if (!verifyPassword(username, currentPassword)) {
-            return ResponseEntity.status(401).body(Map.of("error", "Current password is incorrect"));
-        }
-
-        try {
-            Map<String, Object> credential = Map.of("type", "password", "value", newPassword, "temporary", false);
-            adminPut(keycloakUrl + "/admin/realms/" + realm + "/users/" + userId + "/reset-password", credential);
-            return ResponseEntity.ok(Map.of("message", "Password updated"));
-        } catch (RestClientResponseException e) {
-            log.error("Change password Keycloak error: status={}", e.getStatusCode());
-            return ResponseEntity.status(400).body(Map.of("error", "Password update failed. Check requirements and try again."));
-        } catch (Exception e) {
-            log.error("Change password unexpected error", e);
-            return ResponseEntity.status(500).body(Map.of("error", "Password update failed. Please try again."));
-        }
-    }
-
-    @PutMapping("/change-email")
-    public ResponseEntity<?> changeEmail(@RequestBody Map<String, String> body,
-                                         HttpServletRequest request,
-                                         HttpServletResponse response) {
-        String currentPassword = body.get("currentPassword");
-        String newEmail        = body.get("newEmail");
-
-        if (currentPassword == null || currentPassword.isBlank() ||
-            newEmail        == null || newEmail.isBlank()) {
-            return ResponseEntity.badRequest().body(Map.of("error", "Current password and new email are required"));
-        }
-
-        String accessToken = readCookie(request, "access_token");
-        if (accessToken == null || accessToken.isBlank()) {
-            return ResponseEntity.status(401).body(Map.of("error", "Not authenticated"));
-        }
-        Map<?, ?> claims = parseJwtPayload(accessToken);
-        String userId = (String) claims.get("sub");
-        String username = (String) claims.get("preferred_username");
-        String currentEmail = (String) claims.get("email");
-        if (userId == null || username == null) {
-            return ResponseEntity.status(401).body(Map.of("error", "Invalid token"));
-        }
-
-        if (currentEmail != null && currentEmail.equalsIgnoreCase(newEmail.trim())) {
-            return ResponseEntity.badRequest().body(Map.of("error", "New email is the same as current email"));
-        }
-
-        if (!verifyPassword(username, currentPassword)) {
-            return ResponseEntity.status(401).body(Map.of("error", "Current password is incorrect"));
-        }
-
-        try {
-            Map<String, Object> patch = Map.of("email", newEmail.trim(), "emailVerified", true);
-            adminPut(keycloakUrl + "/admin/realms/" + realm + "/users/" + userId, patch);
-
-            String refreshToken = readCookie(request, "refresh_token");
-            if (refreshToken != null) {
-                MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
-                form.add("grant_type", "refresh_token");
-                form.add("client_id", clientId);
-                form.add("refresh_token", refreshToken);
-                Map<?, ?> tokens = callKeycloak(form);
-                setAuthCookies(response, tokens);
-                return ResponseEntity.ok(extractUserInfo(tokens));
-            }
-            return ResponseEntity.ok(Map.of("message", "Email updated"));
-        } catch (RestClientResponseException e) {
-            log.error("Change email Keycloak error: status={} body={}", e.getStatusCode(), e.getResponseBodyAsString());
-            if (e.getStatusCode().value() == 409) {
-                return ResponseEntity.status(409).body(Map.of("error", "Email already in use"));
-            }
-            return ResponseEntity.status(400).body(Map.of("error", "Email update failed. Check the address and try again."));
-        } catch (Exception e) {
-            log.error("Change email unexpected error", e);
-            return ResponseEntity.status(500).body(Map.of("error", "Email update failed. Please try again."));
-        }
-    }
-
     @DeleteMapping("/account")
-    public ResponseEntity<?> deleteAccount(@RequestBody Map<String, String> body,
-                                            HttpServletRequest request,
+    public ResponseEntity<?> deleteAccount(HttpServletRequest request,
                                             HttpServletResponse response) {
-        String currentPassword = body.get("currentPassword");
-        if (currentPassword == null || currentPassword.isBlank()) {
-            return ResponseEntity.badRequest().body(Map.of("error", "Current password is required"));
-        }
-
         String accessToken = readCookie(request, "access_token");
         if (accessToken == null || accessToken.isBlank()) {
             return ResponseEntity.status(401).body(Map.of("error", "Not authenticated"));
         }
         Map<?, ?> claims = parseJwtPayload(accessToken);
         String userId = (String) claims.get("sub");
-        String username = (String) claims.get("preferred_username");
-        if (userId == null || username == null) {
+        if (userId == null) {
             return ResponseEntity.status(401).body(Map.of("error", "Invalid token"));
         }
 
-        if (!verifyPassword(username, currentPassword)) {
-            return ResponseEntity.status(401).body(Map.of("error", "Current password is incorrect"));
+        if (!isFreshAuthentication(claims, System.currentTimeMillis() - REAUTH_WINDOW_MS)) {
+            return ResponseEntity.status(403).body(Map.of("error", "Re-authentication required"));
         }
 
         try {
@@ -399,6 +387,12 @@ public class AuthController {
         return value instanceof String s ? s : null;
     }
 
+    private static long sessionLong(HttpSession session, String name) {
+        if (session == null) return 0L;
+        Object value = session.getAttribute(name);
+        return value instanceof Number n ? n.longValue() : 0L;
+    }
+
     private static String randomToken(int byteCount) {
         byte[] buffer = new byte[byteCount];
         SECURE_RANDOM.nextBytes(buffer);
@@ -419,32 +413,67 @@ public class AuthController {
         return MessageDigest.isEqual(a.getBytes(StandardCharsets.UTF_8), b.getBytes(StandardCharsets.UTF_8));
     }
 
-    private boolean isPasswordStrong(String password) {
-        if (password == null || password.length() < 8) return false;
-        boolean hasLetter = false;
-        boolean hasDigit = false;
-        for (int i = 0; i < password.length(); i++) {
-            char c = password.charAt(i);
-            if (Character.isLetter(c)) hasLetter = true;
-            else if (Character.isDigit(c)) hasDigit = true;
-            if (hasLetter && hasDigit) return true;
+    // The cookies still describe the user as they were before leaving, so they are refreshed
+    // here: without that, Profile would show the old address until the access token expires.
+    private ResponseEntity<Void> completeOutOfBandReturn(AuthIntent intent, String emailBefore,
+                                                         HttpServletRequest request,
+                                                         HttpServletResponse response) {
+        String refreshToken = readCookie(request, "refresh_token");
+        if (refreshToken == null || refreshToken.isBlank()) {
+            return redirect(appBaseUrl + "/dashboard");
         }
-        return false;
+        try {
+            MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
+            form.add("grant_type", "refresh_token");
+            form.add("client_id", clientId);
+            form.add("refresh_token", refreshToken);
+            Map<?, ?> tokens = callKeycloak(form);
+            setAuthCookies(response, tokens);
+
+            if (intent == AuthIntent.UPDATE_EMAIL) {
+                String emailAfter = (String) parseJwtPayload((String) tokens.get("access_token")).get("email");
+                if (emailBefore != null && !emailBefore.equals(emailAfter)) {
+                    return redirect(actionLanding(intent, "changed"));
+                }
+                // The address before the redirect is read from the access-token cookie, which
+                // may have expired while the user was on Keycloak's pages. Land on the account
+                // page anyway, where the refreshed token shows what the address actually is.
+                log.debug("Out-of-band email return without a usable before-and-after comparison");
+                return redirect(appBaseUrl + "/profile");
+            }
+            return redirect(appBaseUrl + "/dashboard");
+        } catch (RestClientResponseException e) {
+            log.warn("Out-of-band return could not refresh tokens: status={}", e.getStatusCode());
+            return redirect(appBaseUrl + "/dashboard");
+        }
     }
 
-    private boolean verifyPassword(String username, String password) {
-        MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
-        form.add("grant_type", "password");
-        form.add("client_id", clientId);
-        form.add("scope", "openid");
-        form.add("username", username);
-        form.add("password", password);
-        try {
-            callKeycloak(form);
-            return true;
-        } catch (RestClientResponseException e) {
+    private String failureLanding(AuthIntent intent) {
+        return intent == AuthIntent.LOGIN
+                ? appBaseUrl + "/login?error=auth_failed"
+                : actionLanding(intent, "error");
+    }
+
+    private String actionLanding(AuthIntent intent, String status) {
+        return UriComponentsBuilder.fromUriString(appBaseUrl + "/profile")
+                .queryParam("action", intent.landingAction)
+                .queryParam("status", status)
+                .encode()
+                .toUriString();
+    }
+
+    private static boolean isFreshAuthentication(Map<?, ?> claims, long notBeforeMillis) {
+        Object authTime = claims.get("auth_time");
+        long authTimeMillis;
+        if (authTime instanceof Number seconds) {
+            authTimeMillis = seconds.longValue() * 1000L;
+        } else if (authTime instanceof Instant instant) {
+            authTimeMillis = instant.toEpochMilli();
+        } else {
+            // Absent means the authorization server ignored max_age; treat that as not proven.
             return false;
         }
+        return authTimeMillis >= notBeforeMillis - AUTH_TIME_SKEW_MS;
     }
 
     private String getAdminToken() {
@@ -489,16 +518,6 @@ public class AuthController {
             }
             throw e;
         }
-    }
-
-    private void adminPut(String uri, Object body) {
-        executeAdminCall(adminToken -> restClient.put()
-                .uri(uri)
-                .header(HttpHeaders.AUTHORIZATION, "Bearer " + adminToken)
-                .contentType(MediaType.APPLICATION_JSON)
-                .body(body)
-                .retrieve()
-                .toBodilessEntity());
     }
 
     private void adminDelete(String uri) {
