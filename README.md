@@ -79,7 +79,7 @@ The gateway is the only service the frontend talks to. It forwards the user's JW
 | `APP_BASE_URL`                 | `http://localhost:5173`                       | Where the gateway sends the browser after a completed login        |
 | `KEYCLOAK_REALM`               | `game-cellar`                                 | Realm name                                                         |
 | `KEYCLOAK_CLIENT_ID`           | `game-cellar-client`                          | Public client for the code flow, and the expected `azp` on incoming tokens |
-| `GATEWAY_ADMIN_CLIENT_ID`      | `gateway-admin`                               | Service-account client for user registration                       |
+| `GATEWAY_ADMIN_CLIENT_ID`      | `gateway-admin`                               | Service-account client for the one remaining Admin REST call, deleting the Keycloak user on account deletion                    |
 | `GATEWAY_ADMIN_CLIENT_SECRET`  | _none_                                        | Service-account secret (must have `realm-management/manage-users`) |
 | `GAME_SERVICE_URL`             | `http://localhost:8081`                       | Downstream service                                                 |
 | `LIBRARY_SERVICE_URL`          | `http://localhost:8082`                       | Downstream service                                                 |
@@ -131,7 +131,7 @@ Covers Spring context startup and `ClientIpResolver` (proxy-header parsing and s
 - JWTs are validated against the live Keycloak JWKS endpoint on every request.
 - The gateway never accepts a `user_id` from a request body; downstream services extract it from the JWT `sub` claim.
 - Access and refresh tokens live in HttpOnly cookies. The frontend cannot read them from JavaScript.
-- `/auth/login` and `/auth/register` are rate-limited per IP via Bucket4j.
+- `/api/v1/auth/authorize` and `/api/v1/recommendations/**` are rate-limited per IP via Bucket4j.
 
 ## License
 
