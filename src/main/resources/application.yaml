@@ -37,6 +37,18 @@ recommendation:
   ratelimit:
     distributed: ${RECOMMENDATION_RATELIMIT_DISTRIBUTED:true}
 
+sentry:
+  # Empty default is deliberate: with no DSN the SDK is a no-op, so local runs and the
+  # test suite never ship events. Only production sets it.
+  dsn: ${SENTRY_DSN:}
+  environment: ${SENTRY_ENVIRONMENT:local}
+  release: ${SENTRY_RELEASE:}
+  traces-sample-rate: 0
+  send-default-pii: false
+  # Lifts the MDC key onto the event as a tag, which is what ties an event to its log lines.
+  context-tags:
+    - requestId
+
 management:
   endpoints:
     web:
