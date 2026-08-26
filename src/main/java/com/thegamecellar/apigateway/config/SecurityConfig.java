@@ -18,7 +18,6 @@ import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.jwt.JwtValidators;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
-import org.springframework.security.oauth2.server.resource.web.authentication.BearerTokenAuthenticationFilter;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.web.cors.CorsConfigurationSource;
 
@@ -64,9 +63,7 @@ public class SecurityConfig {
                     }
                     return null;
                 })
-            )
-            // After bearer authentication, so the JWT is validated and the subject present.
-            .addFilterAfter(new SentryUserFilter(), BearerTokenAuthenticationFilter.class);
+            );
 
         return http.build();
     }
