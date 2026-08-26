@@ -38,6 +38,7 @@ The gateway is the only service the frontend talks to. It forwards the user's JW
 - Spring Security OAuth 2 Resource Server for JWT validation
 - Bucket4j for per-IP rate limiting
 - Spring Boot Actuator for `/actuator/health`
+- Sentry for error tracking (`sentry-spring-boot-4` + `sentry-logback`)
 
 > Routes are defined programmatically in `GatewayRoutesConfig.java`. YAML-based routes do not work with Spring Cloud Gateway MVC 5.x and silently fail with `NoResourceFoundException`.
 
@@ -91,6 +92,9 @@ The gateway is the only service the frontend talks to. It forwards the user's JW
 | `REDIS_PORT`                   | `6379`                                        | Redis port                                                         |
 | `REDIS_PASSWORD`               | (required when Redis used)                    | Redis password                                                     |
 | `RATE_LIMIT_TRUSTED_PROXIES`   | (empty)                                       | Comma-separated IPs/CIDRs of proxies allowed to set `X-Forwarded-For`. Empty means the header is ignored and the socket address is used. Set to the edge proxy ranges (e.g. Cloudflare) when deployed behind one. |
+| `SENTRY_DSN`                   | (empty)                                       | Sentry ingest endpoint. Empty makes the SDK a no-op, so local runs and tests send nothing. Set in production only. |
+| `SENTRY_ENVIRONMENT`           | `local`                                       | Environment tag on every Sentry event                              |
+| `SENTRY_RELEASE`               | (empty)                                       | Commit sha, baked into the image at build time so Sentry can group regressions by deploy |
 
 Values are loaded from a root-level `.env` file in development. Secrets must never be hardcoded.
 
