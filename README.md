@@ -128,7 +128,7 @@ docker compose up api-gateway
 ./mvnw test
 ```
 
-Covers Spring context startup and `ClientIpResolver` (proxy-header parsing and spoofing rejection). Route predicates, JWT rejection paths, CORS and the auth endpoints are not yet covered.
+Hermetic: no Keycloak, Redis or downstream service is needed. A JDK `HttpServer` stub per outbound target (Keycloak, library-service and the three proxy targets) records what the gateway sent and answers what the test scripted, and the `JwtDecoder` is a mock that maps token strings to claims. Covered through MockMvc: the security chain (cookie and bearer resolution, the admin role, 401 and 403 paths), every route prefix landing on the right service with its query string, CORS preflight and actual requests, the request-id filter, both rate limiters in their own context, and the full auth flow: `authorize` per intent, `callback` with PKCE verified against the challenge that went out, `refresh`, `logout`, `me` and `account` including purge-before-identity ordering and the admin-token retry. `TokenValidatorTest` covers issuer, `azp`, expiry and not-before on the validator the decoder uses.
 
 ## Security
 
