@@ -37,6 +37,20 @@ recommendation:
   ratelimit:
     distributed: ${RECOMMENDATION_RATELIMIT_DISTRIBUTED:true}
 
+security:
+  internal:
+    # Shared secret for library-service's /internal/** paths, which the deletion ledger sits behind.
+    token: ${INTERNAL_SERVICE_TOKEN:}
+
+account-deletion:
+  retry:
+    # Finishes deletions whose library purge committed but whose identity delete was never
+    # confirmed. The ledger only lists rows older than a minute, so the cadence matches.
+    fixed-delay-ms: ${ACCOUNT_DELETION_RETRY_DELAY_MS:60000}
+    initial-delay-ms: ${ACCOUNT_DELETION_RETRY_INITIAL_DELAY_MS:60000}
+    # Every this-many failed attempts on one row logs at ERROR, which reaches Sentry.
+    max-attempts: ${ACCOUNT_DELETION_RETRY_MAX_ATTEMPTS:10}
+
 sentry:
   # Empty default is deliberate: with no DSN the SDK is a no-op, so local runs and the
   # test suite never ship events. Only production sets it.
