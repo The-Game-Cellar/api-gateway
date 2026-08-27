@@ -103,34 +103,6 @@ public class AuthController {
     private static final long REAUTH_WINDOW_MS = 5 * 60 * 1000L;
     private static final long AUTH_TIME_SKEW_MS = 30_000L;
 
-    /**
-     * What the browser left for, remembered across the redirect. Everything but LOGIN forces a
-     * fresh authentication; the two with a Keycloak action name let Keycloak own the form.
-     */
-    private enum AuthIntent {
-        LOGIN(null, null),
-        UPDATE_PASSWORD("UPDATE_PASSWORD", "password"),
-        UPDATE_EMAIL("UPDATE_EMAIL", "email"),
-        DELETE_ACCOUNT(null, "delete");
-
-        private final String keycloakAction;
-        private final String landingAction;
-
-        AuthIntent(String keycloakAction, String landingAction) {
-            this.keycloakAction = keycloakAction;
-            this.landingAction = landingAction;
-        }
-
-        // Anything unrecognised is a plain login, which grants nothing the caller did not already have.
-        static AuthIntent from(String raw) {
-            if (raw == null) return LOGIN;
-            for (AuthIntent intent : values()) {
-                if (intent.name().equalsIgnoreCase(raw)) return intent;
-            }
-            return LOGIN;
-        }
-    }
-
     @GetMapping("/authorize")
     public ResponseEntity<Void> authorize(
             @RequestParam(name = "register", defaultValue = "false") boolean register,

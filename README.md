@@ -15,7 +15,7 @@
 - Validate JWTs against the Keycloak realm via its JWKS endpoint.
 - Host the local auth controller: it starts and completes the Authorization Code flow with PKCE, rotates refresh tokens, logs out, and changes email and password through the Keycloak Admin API.
 - Issue and clear HttpOnly auth cookies so the frontend never holds raw JWTs in JavaScript.
-- Apply per-IP rate limiting on `/auth/authorize` via Bucket4j.
+- Rate limit `/auth/authorize` via Bucket4j: login and sign-up starts per IP, account actions per user.
 
 ## Position in the System
 
@@ -103,6 +103,12 @@ The gateway is the only service the frontend talks to. It forwards the user's JW
 | `REDIS_HOST`                   | `localhost`                                   | Redis host for distributed rate-limit buckets                      |
 | `REDIS_PORT`                   | `6379`                                        | Redis port                                                         |
 | `REDIS_PASSWORD`               | (required when Redis used)                    | Redis password                                                     |
+| `RATE_LIMIT_LOGIN_REQUESTS`    | `5`                                           | Login and sign-up starts on `/auth/authorize` allowed per IP per window |
+| `RATE_LIMIT_LOGIN_WINDOW_SECONDS` | `60`                                       | Window for the above                                               |
+| `RATE_LIMIT_ACCOUNT_ACTION_REQUESTS` | `10`                                    | Account-action starts (`/auth/authorize?intent=...`) allowed per user per window, per IP when no session cookie is present |
+| `RATE_LIMIT_ACCOUNT_ACTION_WINDOW_SECONDS` | `600`                             | Window for the above                                               |
+| `RATE_LIMIT_RECOMMENDATIONS_REQUESTS` | `60`                                   | Recommendation requests allowed per user per window                |
+| `RATE_LIMIT_RECOMMENDATIONS_WINDOW_SECONDS` | `60`                             | Window for the above                                               |
 | `RATE_LIMIT_TRUSTED_PROXIES`   | (empty)                                       | Comma-separated IPs/CIDRs of proxies allowed to set `X-Forwarded-For`. Empty means the header is ignored and the socket address is used. Set to the edge proxy ranges (e.g. Cloudflare) when deployed behind one. |
 | `SENTRY_DSN`                   | (empty)                                       | Sentry ingest endpoint. Empty makes the SDK a no-op, so local runs and tests send nothing. Set in production only. |
 | `SENTRY_ENVIRONMENT`           | `local`                                       | Environment tag on every Sentry event                              |
@@ -147,7 +153,7 @@ Hermetic: no Keycloak, Redis or downstream service is needed. A JDK `HttpServer`
 - JWTs are validated against the live Keycloak JWKS endpoint on every request.
 - The gateway never accepts a `user_id` from a request body; downstream services extract it from the JWT `sub` claim.
 - Access and refresh tokens live in HttpOnly cookies. The frontend cannot read them from JavaScript.
-- `/api/v1/auth/authorize` and `/api/v1/recommendations/**` are rate-limited per IP via Bucket4j.
+- `/api/v1/auth/authorize` is rate-limited via Bucket4j on two budgets: anonymous starts (login, sign-up) per IP, account actions (`?intent=`) per user with the IP as fallback. `/api/v1/recommendations/**` is limited per user. Account creation itself is limited by nginx on the auth host, since Keycloak's registration form never passes through this service.
 
 ## License
 
