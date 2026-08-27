@@ -7,21 +7,21 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 @Configuration
 public class WebMvcConfig implements WebMvcConfigurer {
 
-    private final LoginRateLimitInterceptor loginRateLimitInterceptor;
+    private final AuthorizeRateLimitInterceptor authorizeRateLimitInterceptor;
     private final RecommendationRateLimitInterceptor recommendationRateLimitInterceptor;
 
-    public WebMvcConfig(LoginRateLimitInterceptor loginRateLimitInterceptor,
+    public WebMvcConfig(AuthorizeRateLimitInterceptor authorizeRateLimitInterceptor,
                         RecommendationRateLimitInterceptor recommendationRateLimitInterceptor) {
-        this.loginRateLimitInterceptor = loginRateLimitInterceptor;
+        this.authorizeRateLimitInterceptor = authorizeRateLimitInterceptor;
         this.recommendationRateLimitInterceptor = recommendationRateLimitInterceptor;
     }
 
     @Override
     public void addInterceptors(InterceptorRegistry registry) {
         // The password grant is gone, so the surface worth limiting is the route that
-        // starts a hosted login. Callback is left out: it carries a one-time code and a
+        // starts every hosted flow. Callback is left out: it carries a one-time code and a
         // limit there would break a legitimate return from Keycloak.
-        registry.addInterceptor(loginRateLimitInterceptor)
+        registry.addInterceptor(authorizeRateLimitInterceptor)
                 .addPathPatterns("/api/v1/auth/authorize");
         registry.addInterceptor(recommendationRateLimitInterceptor)
                 .addPathPatterns("/api/v1/recommendations/**");
