@@ -78,7 +78,13 @@ public class SecurityConfig {
             @Value("${KEYCLOAK_CLIENT_ID:game-cellar-client}") String clientId) {
 
         NimbusJwtDecoder decoder = NimbusJwtDecoder.withJwkSetUri(jwkSetUri).build();
+        decoder.setJwtValidator(tokenValidator(issuerUri, clientId));
+        return decoder;
+    }
 
+    // Everything checked about a token after its signature: timestamps, issuer, and the
+    // client it was issued to. Kept apart from the decoder so it can be tested without a JWKS.
+    static OAuth2TokenValidator<Jwt> tokenValidator(String issuerUri, String clientId) {
         // azp, not aud: Keycloak issues every token in the realm with aud "account", so
         // checking it would exclude nothing. azp names the client the token was issued to.
         OAuth2TokenValidator<Jwt> authorizedParty = jwt -> clientId.equals(jwt.getClaimAsString("azp"))
@@ -86,11 +92,9 @@ public class SecurityConfig {
                 : OAuth2TokenValidatorResult.failure(new OAuth2Error(
                         "invalid_token", "Token was not issued to this client", null));
 
-        decoder.setJwtValidator(new DelegatingOAuth2TokenValidator<>(
+        return new DelegatingOAuth2TokenValidator<>(
                 JwtValidators.createDefaultWithIssuer(issuerUri),
-                authorizedParty));
-
-        return decoder;
+                authorizedParty);
     }
 
     @Bean
