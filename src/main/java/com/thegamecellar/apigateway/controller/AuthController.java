@@ -1,5 +1,7 @@
 package com.thegamecellar.apigateway.controller;
 
+import com.thegamecellar.apigateway.client.AccountDeletionLedgerClient;
+import com.thegamecellar.apigateway.client.KeycloakAdminClient;
 import jakarta.servlet.http.Cookie;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -24,6 +26,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.client.RestClient;
+import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestClientResponseException;
 import org.springframework.web.util.UriComponentsBuilder;
 
@@ -36,8 +39,6 @@ import java.time.Instant;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Consumer;
 
 @RestController
 @RequestMapping("/api/v1/auth")
@@ -47,9 +48,15 @@ public class AuthController {
 
     private final RestClient restClient = RestClient.create();
     private final JwtDecoder jwtDecoder;
+    private final KeycloakAdminClient keycloakAdmin;
+    private final AccountDeletionLedgerClient deletionLedger;
 
-    public AuthController(JwtDecoder jwtDecoder) {
+    public AuthController(JwtDecoder jwtDecoder,
+                          KeycloakAdminClient keycloakAdmin,
+                          AccountDeletionLedgerClient deletionLedger) {
         this.jwtDecoder = jwtDecoder;
+        this.keycloakAdmin = keycloakAdmin;
+        this.deletionLedger = deletionLedger;
     }
 
     @Value("${KEYCLOAK_AUTH_SERVER_URL:http://localhost:8080}")
@@ -63,12 +70,6 @@ public class AuthController {
 
     @Value("${COOKIE_SECURE:false}")
     private boolean cookieSecure;
-
-    @Value("${GATEWAY_ADMIN_CLIENT_ID:gateway-admin}")
-    private String adminClientId;
-
-    @Value("${GATEWAY_ADMIN_CLIENT_SECRET}")
-    private String adminClientSecret;
 
     @Value("${LIBRARY_SERVICE_URL:http://localhost:8082}")
     private String libraryServiceUrl;
@@ -86,9 +87,6 @@ public class AuthController {
     @Value("${APP_BASE_URL:http://localhost:5173}")
     private String appBaseUrl;
 
-    private static final long ADMIN_TOKEN_SAFETY_MARGIN_MS = 5_000L;
-    private final AtomicReference<TokenWithExpiry> cachedAdminToken = new AtomicReference<>();
-
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
     private static final String SESSION_CODE_VERIFIER = "pkce.code_verifier";
     private static final String SESSION_STATE = "oauth.state";
@@ -102,8 +100,6 @@ public class AuthController {
     // was last entered rather than time since the last token was issued.
     private static final long REAUTH_WINDOW_MS = 5 * 60 * 1000L;
     private static final long AUTH_TIME_SKEW_MS = 30_000L;
-
-    private record TokenWithExpiry(String token, long expiresAtEpochMillis) {}
 
     /**
      * What the browser left for, remembered across the redirect. Everything but LOGIN forces a
@@ -336,32 +332,73 @@ public class AuthController {
             return ResponseEntity.status(403).body(Map.of("error", "Re-authentication required"));
         }
 
+        // Identity is shut before anything is destroyed: once the library is gone the user must
+        // not be able to sign in again, whatever happens to the rest of this method. A refusal
+        // here also proves the admin credentials work before they are needed for the delete.
         try {
-            // Purge library first so a failure leaves the Keycloak account intact and retryable.
-            try {
-                restClient.delete()
-                        .uri(libraryServiceUrl + "/api/v1/library/account")
-                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken)
-                        .retrieve()
-                        .toBodilessEntity();
-            } catch (RestClientResponseException e) {
-                log.error("Account delete: library purge failed for userId={}: status={} body={}",
-                        userId, e.getStatusCode(), e.getResponseBodyAsString());
-                return ResponseEntity.status(502).body(Map.of("error", "Could not purge library data, try again"));
-            }
-
-            adminDelete(keycloakUrl + "/admin/realms/" + realm + "/users/" + userId);
-            clearAuthCookies(response);
-            return ResponseEntity.ok(Map.of("message", "Account deleted"));
-        } catch (RestClientResponseException e) {
-            log.error("Account delete Keycloak error for userId={}: status={} body={}",
-                    userId, e.getStatusCode(), e.getResponseBodyAsString());
+            keycloakAdmin.setEnabled(userId, false);
+        } catch (RestClientException e) {
+            log.error("Account delete: could not disable Keycloak user userId={}: {}", userId, describe(e));
             return ResponseEntity.status(502).body(Map.of("error",
-                    "Library data purged but Keycloak account remains. Contact support."));
-        } catch (Exception e) {
-            log.error("Account delete unexpected error for userId={}", userId, e);
-            return ResponseEntity.status(500).body(Map.of("error", "Account deletion failed. Please try again."));
+                    "Could not reach the identity provider. Nothing was deleted, try again."));
         }
+        try {
+            keycloakAdmin.logout(userId);
+        } catch (RestClientException e) {
+            // A disabled user cannot refresh, so a failed logout only leaves an SSO cookie that opens nothing.
+            log.warn("Account delete: could not end sessions for userId={}: {}", userId, describe(e));
+        }
+
+        try {
+            restClient.delete()
+                    .uri(libraryServiceUrl + "/api/v1/library/account")
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken)
+                    .retrieve()
+                    .toBodilessEntity();
+        } catch (RestClientException e) {
+            log.error("Account delete: library purge failed for userId={}: {}", userId, describe(e));
+            reEnable(userId);
+            return ResponseEntity.status(502).body(Map.of("error", "Could not purge library data, try again"));
+        }
+
+        // The purge wrote the ledger row, so from here every failure is finished by the retry job.
+        boolean identityGone = false;
+        try {
+            keycloakAdmin.delete(userId);
+            identityGone = true;
+        } catch (RestClientException e) {
+            log.warn("Account delete: identity delete failed for userId={}, left to the retry job: {}",
+                    userId, describe(e));
+        }
+        if (identityGone) {
+            try {
+                deletionLedger.complete(userId);
+            } catch (RestClientException e) {
+                log.warn("Account delete: ledger not closed for userId={}, the retry job will confirm: {}",
+                        userId, describe(e));
+            }
+        }
+        clearAuthCookies(response);
+        return identityGone
+                ? ResponseEntity.ok(Map.of("message", "Account deleted"))
+                : ResponseEntity.status(HttpStatus.ACCEPTED).body(Map.of("message",
+                        "Account deletion accepted and will finish shortly"));
+    }
+
+    private void reEnable(String userId) {
+        try {
+            keycloakAdmin.setEnabled(userId, true);
+        } catch (RestClientException e) {
+            log.error("Account delete: userId={} left disabled with its library intact after a failed purge; re-enable by hand",
+                    userId, e);
+        }
+    }
+
+    private static String describe(RestClientException e) {
+        if (e instanceof RestClientResponseException r) {
+            return "status=" + r.getStatusCode() + " body=" + r.getResponseBodyAsString();
+        }
+        return e.getClass().getSimpleName() + ": " + e.getMessage();
     }
 
     @GetMapping("/me")
@@ -474,58 +511,6 @@ public class AuthController {
             return false;
         }
         return authTimeMillis >= notBeforeMillis - AUTH_TIME_SKEW_MS;
-    }
-
-    private String getAdminToken() {
-        TokenWithExpiry cached = cachedAdminToken.get();
-        long now = System.currentTimeMillis();
-        if (cached != null && cached.expiresAtEpochMillis() - ADMIN_TOKEN_SAFETY_MARGIN_MS > now) {
-            return cached.token();
-        }
-        return refreshAdminToken();
-    }
-
-    @SuppressWarnings("unchecked")
-    private String refreshAdminToken() {
-        String tokenUrl = keycloakUrl + "/realms/" + realm + "/protocol/openid-connect/token";
-        MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
-        form.add("grant_type", "client_credentials");
-        form.add("client_id", adminClientId);
-        form.add("client_secret", adminClientSecret);
-        Map<?, ?> tokens = restClient.post()
-                .uri(tokenUrl)
-                .contentType(MediaType.APPLICATION_FORM_URLENCODED)
-                .body(form)
-                .retrieve()
-                .body(Map.class);
-        String accessToken = (String) tokens.get("access_token");
-        Object expiresInObj = tokens.get("expires_in");
-        long expiresInSec = expiresInObj instanceof Number n ? n.longValue() : 60L;
-        long expiresAt = System.currentTimeMillis() + expiresInSec * 1000L;
-        cachedAdminToken.set(new TokenWithExpiry(accessToken, expiresAt));
-        return accessToken;
-    }
-
-    // Retry once on 401 so a rotated gateway-admin secret or revoked cached token recovers transparently.
-    private void executeAdminCall(Consumer<String> action) {
-        try {
-            action.accept(getAdminToken());
-        } catch (RestClientResponseException e) {
-            if (e.getStatusCode().value() == 401) {
-                cachedAdminToken.set(null);
-                action.accept(refreshAdminToken());
-                return;
-            }
-            throw e;
-        }
-    }
-
-    private void adminDelete(String uri) {
-        executeAdminCall(adminToken -> restClient.delete()
-                .uri(uri)
-                .header(HttpHeaders.AUTHORIZATION, "Bearer " + adminToken)
-                .retrieve()
-                .toBodilessEntity());
     }
 
     @SuppressWarnings("unchecked")

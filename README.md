@@ -66,7 +66,11 @@ The gateway is the only service the frontend talks to. It forwards the user's JW
 | POST   | `/api/v1/auth/logout`             | Revokes the refresh token and clears cookies.               |
 | POST   | `/api/v1/auth/refresh`            | Refresh-token grant. Rotates cookies.                       |
 | GET    | `/api/v1/auth/me`                 | Reads the access-token cookie and returns userInfo.         |
-| DELETE | `/api/v1/auth/account`            | Purges library data, then deletes the Keycloak user. Requires a re-authentication completed through `/authorize?intent=DELETE_ACCOUNT` within the last five minutes; takes no request body. |
+| DELETE | `/api/v1/auth/account`            | Disables the Keycloak user and ends its sessions, purges library data (which writes the deletion ledger), deletes the Keycloak user, then closes the ledger row. A failure before the purge is a `502` with nothing deleted (a failed purge re-enables the user); a failure after it is a `202`, and the scheduled retry job finishes the identity delete. Requires a re-authentication completed through `/authorize?intent=DELETE_ACCOUNT` within the last five minutes; takes no request body. |
+
+### Scheduled
+
+`AccountDeletionRetryJob` runs every `ACCOUNT_DELETION_RETRY_DELAY_MS`, reads `GET /internal/library/account-deletions/pending` from library-service, and for each row disables and deletes the Keycloak user (a `404` counts as deleted) and posts `.../{userId}/complete`. Every `ACCOUNT_DELETION_RETRY_MAX_ATTEMPTS` failed attempts on one row logs at ERROR, which reaches Sentry.
 
 ## Configuration
 
@@ -80,8 +84,12 @@ The gateway is the only service the frontend talks to. It forwards the user's JW
 | `APP_BASE_URL`                 | `http://localhost:5173`                       | Where the gateway sends the browser after a completed login        |
 | `KEYCLOAK_REALM`               | `game-cellar`                                 | Realm name                                                         |
 | `KEYCLOAK_CLIENT_ID`           | `game-cellar-client`                          | Public client for the code flow, and the expected `azp` on incoming tokens |
-| `GATEWAY_ADMIN_CLIENT_ID`      | `gateway-admin`                               | Service-account client for the one remaining Admin REST call, deleting the Keycloak user on account deletion                    |
+| `GATEWAY_ADMIN_CLIENT_ID`      | `gateway-admin`                               | Service-account client for the Admin REST calls made on account deletion: disable, logout, delete |
 | `GATEWAY_ADMIN_CLIENT_SECRET`  | _none_                                        | Service-account secret (must have `realm-management/manage-users`) |
+| `INTERNAL_SERVICE_TOKEN`       | (empty)                                       | Shared secret for library-service's `/internal/**` paths, where the account deletion ledger lives. Empty means the ledger cannot be read or closed. |
+| `ACCOUNT_DELETION_RETRY_DELAY_MS` | `60000`                                    | Interval of the deletion retry job                                 |
+| `ACCOUNT_DELETION_RETRY_INITIAL_DELAY_MS` | `60000`                            | Delay before the job's first run after start                       |
+| `ACCOUNT_DELETION_RETRY_MAX_ATTEMPTS` | `10`                                   | Failed attempts on one row between ERROR-level escalations         |
 | `GAME_SERVICE_URL`             | `http://localhost:8081`                       | Downstream service                                                 |
 | `LIBRARY_SERVICE_URL`          | `http://localhost:8082`                       | Downstream service                                                 |
 | `RECOMMENDATION_SERVICE_URL`   | `http://localhost:8083`                       | Downstream service                                                 |
