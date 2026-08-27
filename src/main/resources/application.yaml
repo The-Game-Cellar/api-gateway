@@ -54,6 +54,11 @@ management:
     web:
       exposure:
         include: health
+  endpoint:
+    health:
+      # The body is UP or DOWN and nothing else. The endpoint is public through /healthz
+      # for the uptime probe, so it must not describe which component failed.
+      show-details: never
 
 logging:
   pattern:
