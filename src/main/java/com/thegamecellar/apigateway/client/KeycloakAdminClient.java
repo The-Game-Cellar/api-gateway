@@ -91,12 +91,15 @@ public class KeycloakAdminClient {
         }
     }
 
-    // Retry once on 401 so a rotated gateway-admin secret or revoked cached token recovers transparently.
+    // Retry once with a fresh token on 401 and 403. A 401 is a dead cached token; a 403 can be
+    // a token issued before the service account was granted a role, since roles are baked in
+    // at issuance, and without the retry a grant made mid-flight only takes effect on restart.
     private void execute(Consumer<String> action) {
         try {
             action.accept(getToken());
         } catch (RestClientResponseException e) {
-            if (e.getStatusCode().value() == 401) {
+            int status = e.getStatusCode().value();
+            if (status == 401 || status == 403) {
                 cachedToken.set(null);
                 action.accept(refreshToken());
                 return;

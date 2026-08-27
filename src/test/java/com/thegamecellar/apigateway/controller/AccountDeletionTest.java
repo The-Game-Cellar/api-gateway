@@ -171,6 +171,23 @@ class AccountDeletionTest extends GatewayTestBase {
         assertThat(keycloak.recorded("DELETE", ADMIN_USER_PATH)).hasSize(1);
     }
 
+    // Roles are baked into a token when it is issued, so a 403 on a cached token may only mean
+    // the grant is newer than the token: one fresh token and one retry, then the answer stands.
+    @Test
+    void aForbiddenAdminCallGetsOneFreshTokenBeforeItCounts() throws Exception {
+        freshlyAuthenticated("fresh");
+        List<Integer> answers = new java.util.concurrent.CopyOnWriteArrayList<>(List.of(403, 204));
+        keycloak.on("PUT", ADMIN_USER_PATH, request -> StubHttpServer.StubResponse.empty(answers.remove(0)));
+
+        mvc.perform(delete("/api/v1/auth/account").cookie(accessCookie("fresh")))
+                .andExpect(status().isOk());
+
+        assertThat(keycloak.recorded("PUT", ADMIN_USER_PATH)).hasSize(2);
+        // At least one: the first call may have used a token cached by an earlier test.
+        assertThat(keycloak.recorded("POST", TOKEN_PATH).stream()
+                .filter(r -> r.body().contains("client_credentials")).count()).isGreaterThanOrEqualTo(1);
+    }
+
     // A 401 from the admin API means the cached service-account token is dead, not that the
     // caller lacks rights: the token is fetched again and the call retried once.
     @Test
