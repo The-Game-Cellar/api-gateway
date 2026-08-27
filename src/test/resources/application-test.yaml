@@ -23,6 +23,16 @@ account-deletion:
     initial-delay-ms: 3600000
     max-attempts: 3
 
+# Short read timeouts so the hang tests finish in seconds. Every stub answers at once, so
+# nothing else in the suite gets near them.
+gateway:
+  outbound:
+    read-timeout-ms: 1000
+spring:
+  http:
+    clients:
+      read-timeout: 1s
+
 # Wide open so the auth suite never trips a limit by sheer volume. RateLimitTest overrides
 # these with tiny values in its own context to reach the 429 path on purpose.
 RATE_LIMIT_LOGIN_REQUESTS: 100000
