@@ -9,6 +9,7 @@ import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.servlet.NoHandlerFoundException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
@@ -40,6 +41,15 @@ public class GlobalExceptionHandler {
         log.debug("No handler for {} {}", request.getMethod(), request.getRequestURI());
         return ResponseEntity.status(HttpStatus.NOT_FOUND)
                 .body(ErrorResponse.of(HttpStatus.NOT_FOUND.value(), "Resource not found", request));
+    }
+
+    // A proxied call that timed out or could not connect. WARN rather than ERROR: a slow
+    // upstream is an operational signal, not a defect in this service, and must not page.
+    @ExceptionHandler(ResourceAccessException.class)
+    public ResponseEntity<ErrorResponse> handleUpstreamUnreachable(ResourceAccessException ex, HttpServletRequest request) {
+        log.warn("Upstream unreachable for {} {}: {}", request.getMethod(), request.getRequestURI(), ex.getMessage());
+        return ResponseEntity.status(HttpStatus.GATEWAY_TIMEOUT)
+                .body(ErrorResponse.of(HttpStatus.GATEWAY_TIMEOUT.value(), "Upstream service did not respond", request));
     }
 
     @ExceptionHandler(Exception.class)

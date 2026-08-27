@@ -46,14 +46,16 @@ public class AuthController {
 
     private static final Logger log = LoggerFactory.getLogger(AuthController.class);
 
-    private final RestClient restClient = RestClient.create();
+    private final RestClient restClient;
     private final JwtDecoder jwtDecoder;
     private final KeycloakAdminClient keycloakAdmin;
     private final AccountDeletionLedgerClient deletionLedger;
 
-    public AuthController(JwtDecoder jwtDecoder,
+    public AuthController(RestClient outboundRestClient,
+                          JwtDecoder jwtDecoder,
                           KeycloakAdminClient keycloakAdmin,
                           AccountDeletionLedgerClient deletionLedger) {
+        this.restClient = outboundRestClient;
         this.jwtDecoder = jwtDecoder;
         this.keycloakAdmin = keycloakAdmin;
         this.deletionLedger = deletionLedger;

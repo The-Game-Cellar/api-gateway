@@ -21,6 +21,13 @@ springdoc:
 spring:
   application:
     name: api-gateway
+  http:
+    clients:
+      # Proxied traffic to the three services goes through Boot's RestClient.Builder, so
+      # these are the only timeouts it has. Read is generous: a game-service search may
+      # wait on IGDB, and a recommendation read may build a cold pool.
+      connect-timeout: ${GATEWAY_PROXY_CONNECT_TIMEOUT:2s}
+      read-timeout: ${GATEWAY_PROXY_READ_TIMEOUT:30s}
   data:
     redis:
       host: ${REDIS_HOST:localhost}
@@ -41,6 +48,14 @@ security:
   internal:
     # Shared secret for library-service's /internal/** paths, which the deletion ledger sits behind.
     token: ${INTERNAL_SERVICE_TOKEN:}
+
+gateway:
+  outbound:
+    # The calls this service makes itself: Keycloak token and Admin endpoints, library-service
+    # purge and ledger. All on the compose network, so short. A hung call here would otherwise
+    # hold a login open or stall the deletion retry job's single scheduler thread for good.
+    connect-timeout-ms: ${GATEWAY_OUTBOUND_CONNECT_TIMEOUT_MS:2000}
+    read-timeout-ms: ${GATEWAY_OUTBOUND_READ_TIMEOUT_MS:5000}
 
 account-deletion:
   retry:

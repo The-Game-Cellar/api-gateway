@@ -20,12 +20,14 @@ public class AccountDeletionLedgerClient {
     private static final Logger log = LoggerFactory.getLogger(AccountDeletionLedgerClient.class);
     private static final String HEADER = "X-Internal-Token";
 
-    private final RestClient restClient = RestClient.create();
+    private final RestClient restClient;
     private final String baseUrl;
     private final String internalToken;
 
-    public AccountDeletionLedgerClient(@Value("${LIBRARY_SERVICE_URL:http://localhost:8082}") String libraryServiceUrl,
+    public AccountDeletionLedgerClient(RestClient outboundRestClient,
+                                       @Value("${LIBRARY_SERVICE_URL:http://localhost:8082}") String libraryServiceUrl,
                                        @Value("${security.internal.token:}") String internalToken) {
+        this.restClient = outboundRestClient;
         this.baseUrl = libraryServiceUrl + "/internal/library/account-deletions";
         this.internalToken = internalToken;
         if (internalToken == null || internalToken.isBlank()) {

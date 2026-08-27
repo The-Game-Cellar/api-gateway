@@ -27,17 +27,19 @@ public class KeycloakAdminClient {
 
     private record TokenWithExpiry(String token, long expiresAtEpochMillis) {}
 
-    private final RestClient restClient = RestClient.create();
+    private final RestClient restClient;
     private final AtomicReference<TokenWithExpiry> cachedToken = new AtomicReference<>();
     private final String keycloakUrl;
     private final String realm;
     private final String clientId;
     private final String clientSecret;
 
-    public KeycloakAdminClient(@Value("${KEYCLOAK_AUTH_SERVER_URL:http://localhost:8080}") String keycloakUrl,
+    public KeycloakAdminClient(RestClient outboundRestClient,
+                               @Value("${KEYCLOAK_AUTH_SERVER_URL:http://localhost:8080}") String keycloakUrl,
                                @Value("${KEYCLOAK_REALM:game-cellar}") String realm,
                                @Value("${GATEWAY_ADMIN_CLIENT_ID:gateway-admin}") String clientId,
                                @Value("${GATEWAY_ADMIN_CLIENT_SECRET}") String clientSecret) {
+        this.restClient = outboundRestClient;
         this.keycloakUrl = keycloakUrl;
         this.realm = realm;
         this.clientId = clientId;

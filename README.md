@@ -90,6 +90,10 @@ The gateway is the only service the frontend talks to. It forwards the user's JW
 | `ACCOUNT_DELETION_RETRY_DELAY_MS` | `60000`                                    | Interval of the deletion retry job                                 |
 | `ACCOUNT_DELETION_RETRY_INITIAL_DELAY_MS` | `60000`                            | Delay before the job's first run after start                       |
 | `ACCOUNT_DELETION_RETRY_MAX_ATTEMPTS` | `10`                                   | Failed attempts on one row between ERROR-level escalations         |
+| `GATEWAY_OUTBOUND_CONNECT_TIMEOUT_MS` | `2000`                                 | Connect timeout for the calls this service makes itself (Keycloak token and Admin endpoints, library-service purge and ledger) |
+| `GATEWAY_OUTBOUND_READ_TIMEOUT_MS` | `5000`                                    | Read timeout for the same calls. A hung call would otherwise hold a login open or stall the deletion retry job's single thread |
+| `GATEWAY_PROXY_CONNECT_TIMEOUT`   | `2s`                                       | Property `spring.http.clients.connect-timeout`; connect timeout for proxied traffic to the three services |
+| `GATEWAY_PROXY_READ_TIMEOUT`      | `30s`                                      | Property `spring.http.clients.read-timeout`; read timeout for proxied traffic. Generous because a game search may wait on IGDB. A timeout answers `504` |
 | `GAME_SERVICE_URL`             | `http://localhost:8081`                       | Downstream service                                                 |
 | `LIBRARY_SERVICE_URL`          | `http://localhost:8082`                       | Downstream service                                                 |
 | `RECOMMENDATION_SERVICE_URL`   | `http://localhost:8083`                       | Downstream service                                                 |
