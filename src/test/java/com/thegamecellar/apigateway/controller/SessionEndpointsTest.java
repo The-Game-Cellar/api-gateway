@@ -34,6 +34,7 @@ class SessionEndpointsTest extends GatewayTestBase {
         mvc.perform(get("/api/v1/auth/me").cookie(accessCookie("alice-token")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.userId").value("alice"))
+                .andExpect(jsonPath("$.username").value("alice"))
                 .andExpect(jsonPath("$.email").value("alice@example.test"))
                 .andExpect(jsonPath("$.roles[0]").value("user"));
 
@@ -53,8 +54,19 @@ class SessionEndpointsTest extends GatewayTestBase {
 
         mvc.perform(get("/api/v1/auth/me").cookie(accessCookie("username-only")))
                 .andExpect(status().isOk())
+                .andExpect(jsonPath("$.username").value("carol"))
                 .andExpect(jsonPath("$.email").value("carol"))
                 .andExpect(jsonPath("$.roles").isEmpty());
+    }
+
+    @Test
+    void meReturnsAnEmptyUsernameWhenTheTokenCarriesNone() throws Exception {
+        issueBare("no-username", "dave", Map.of("email", "dave@example.test", "azp", CLIENT_ID));
+
+        mvc.perform(get("/api/v1/auth/me").cookie(accessCookie("no-username")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.username").value(""))
+                .andExpect(jsonPath("$.email").value("dave@example.test"));
     }
 
     @Test
@@ -66,6 +78,7 @@ class SessionEndpointsTest extends GatewayTestBase {
         mvc.perform(post("/api/v1/auth/refresh").cookie(refreshCookie("alice-refresh")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.userId").value("alice"))
+                .andExpect(jsonPath("$.username").value("alice"))
                 .andExpect(header().stringValues("Set-Cookie", hasItems(
                         startsWith("access_token=alice-access-2;"),
                         startsWith("refresh_token=alice-refresh-2;"))));

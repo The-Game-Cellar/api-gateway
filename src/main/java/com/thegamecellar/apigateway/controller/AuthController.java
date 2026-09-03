@@ -547,9 +547,10 @@ public class AuthController {
 
     private Map<String, Object> extractUserInfoFromClaims(Map<?, ?> claims) {
         String userId = (String) claims.get("sub");
+        String username = (String) claims.get("preferred_username");
         String email = claims.containsKey("email")
                 ? (String) claims.get("email")
-                : (String) claims.get("preferred_username");
+                : username;
 
         Object roles = Collections.emptyList();
         Object realmAccessObj = claims.get("realm_access");
@@ -560,6 +561,7 @@ public class AuthController {
 
         return Map.of(
                 "userId", userId != null ? userId : "",
+                "username", username != null ? username : "",
                 "email", email != null ? email : "",
                 "roles", roles
         );
