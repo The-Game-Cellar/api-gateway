@@ -24,6 +24,7 @@ class AccountDeletionTest extends GatewayTestBase {
     private static final String USER = "6f1c2d3e-0000-4000-8000-000000000001";
     private static final String ADMIN_USER_PATH = "/admin/realms/" + REALM + "/users/" + USER;
     private static final String ADMIN_LOGOUT_PATH = ADMIN_USER_PATH + "/logout";
+    private static final String RECOMMENDATION_PURGE_PATH = "/api/v1/recommendations/account";
     private static final String LIBRARY_PURGE_PATH = "/api/v1/library/account";
     private static final String LEDGER_COMPLETE_PATH = "/internal/library/account-deletions/" + USER + "/complete";
 
@@ -36,6 +37,7 @@ class AccountDeletionTest extends GatewayTestBase {
         keycloak.on("PUT", ADMIN_USER_PATH, StubHttpServer.StubResponse.empty(204));
         keycloak.on("POST", ADMIN_LOGOUT_PATH, StubHttpServer.StubResponse.empty(204));
         keycloak.on("DELETE", ADMIN_USER_PATH, StubHttpServer.StubResponse.empty(204));
+        recommendationService.on("DELETE", RECOMMENDATION_PURGE_PATH, StubHttpServer.StubResponse.json(200, "{\"message\":\"purged\"}"));
         libraryService.on("DELETE", LIBRARY_PURGE_PATH, StubHttpServer.StubResponse.json(200, "{\"message\":\"purged\"}"));
         libraryService.on("POST", LEDGER_COMPLETE_PATH, StubHttpServer.StubResponse.empty(204));
     }
@@ -45,7 +47,7 @@ class AccountDeletionTest extends GatewayTestBase {
     }
 
     @Test
-    void shutsTheIdentityThenPurgesThenDeletesItThenClosesTheLedgerAndClearsCookies() throws Exception {
+    void shutsTheIdentityThenPurgesBothServicesThenDeletesItThenClosesTheLedgerAndClearsCookies() throws Exception {
         freshlyAuthenticated("fresh");
 
         mvc.perform(delete("/api/v1/auth/account").cookie(accessCookie("fresh")))
@@ -58,17 +60,20 @@ class AccountDeletionTest extends GatewayTestBase {
         // Identity is shut before anything is destroyed, and the ledger is closed last.
         StubHttpServer.RecordedRequest disable = keycloak.recorded("PUT", ADMIN_USER_PATH).get(0);
         StubHttpServer.RecordedRequest logout = keycloak.recorded("POST", ADMIN_LOGOUT_PATH).get(0);
+        StubHttpServer.RecordedRequest recommendations = recommendationService.recorded("DELETE", RECOMMENDATION_PURGE_PATH).get(0);
         StubHttpServer.RecordedRequest purge = libraryService.recorded("DELETE", LIBRARY_PURGE_PATH).get(0);
         StubHttpServer.RecordedRequest identity = keycloak.recorded("DELETE", ADMIN_USER_PATH).get(0);
         StubHttpServer.RecordedRequest complete = libraryService.recorded("POST", LEDGER_COMPLETE_PATH).get(0);
 
         assertThat(disable.body()).contains("\"enabled\":false");
         assertThat(disable.header("Authorization")).isEqualTo("Bearer admin-token");
+        assertThat(recommendations.header("Authorization")).isEqualTo("Bearer fresh");
         assertThat(purge.header("Authorization")).isEqualTo("Bearer fresh");
         assertThat(identity.header("Authorization")).isEqualTo("Bearer admin-token");
         assertThat(complete.header("X-Internal-Token")).isEqualTo("test-internal-token");
         assertThat(disable.seq()).isLessThan(logout.seq());
-        assertThat(logout.seq()).isLessThan(purge.seq());
+        assertThat(logout.seq()).isLessThan(recommendations.seq());
+        assertThat(recommendations.seq()).isLessThan(purge.seq());
         assertThat(purge.seq()).isLessThan(identity.seq());
         assertThat(identity.seq()).isLessThan(complete.seq());
     }
@@ -84,6 +89,7 @@ class AccountDeletionTest extends GatewayTestBase {
         mvc.perform(delete("/api/v1/auth/account").cookie(accessCookie("forged")))
                 .andExpect(status().isUnauthorized());
 
+        assertThat(recommendationService.recorded()).isEmpty();
         assertThat(libraryService.recorded()).isEmpty();
         assertThat(keycloak.recorded()).isEmpty();
     }
@@ -117,10 +123,31 @@ class AccountDeletionTest extends GatewayTestBase {
                 .andExpect(jsonPath("$.error").value("Could not reach the identity provider. Nothing was deleted, try again."))
                 .andExpect(header().doesNotExist("Set-Cookie"));
 
+        assertThat(recommendationService.recorded()).isEmpty();
         assertThat(libraryService.recorded()).isEmpty();
         assertThat(keycloak.recorded("DELETE", ADMIN_USER_PATH)).isEmpty();
     }
 
+    @Test
+    void recommendationPurgeFailingReEnablesTheIdentityAndNeverReachesTheLibrary() throws Exception {
+        freshlyAuthenticated("fresh");
+        recommendationService.on("DELETE", RECOMMENDATION_PURGE_PATH, StubHttpServer.StubResponse.json(500, "{\"error\":\"db down\"}"));
+
+        mvc.perform(delete("/api/v1/auth/account").cookie(accessCookie("fresh")))
+                .andExpect(status().isBadGateway())
+                .andExpect(jsonPath("$.error").value("Could not purge recommendation data, try again"))
+                .andExpect(header().doesNotExist("Set-Cookie"));
+
+        List<StubHttpServer.RecordedRequest> updates = keycloak.recorded("PUT", ADMIN_USER_PATH);
+        assertThat(updates).hasSize(2);
+        assertThat(updates.get(0).body()).contains("\"enabled\":false");
+        assertThat(updates.get(1).body()).contains("\"enabled\":true");
+        assertThat(libraryService.recorded()).isEmpty();
+        assertThat(keycloak.recorded("DELETE", ADMIN_USER_PATH)).isEmpty();
+    }
+
+    // Recommendation data is rebuilt from the library, so having purged it before a library
+    // failure costs nothing: the account comes back exactly as usable as it was.
     @Test
     void libraryPurgeFailingReEnablesTheIdentityAndLeavesItUntouched() throws Exception {
         freshlyAuthenticated("fresh");
@@ -135,6 +162,7 @@ class AccountDeletionTest extends GatewayTestBase {
         assertThat(updates).hasSize(2);
         assertThat(updates.get(0).body()).contains("\"enabled\":false");
         assertThat(updates.get(1).body()).contains("\"enabled\":true");
+        assertThat(recommendationService.recorded("DELETE", RECOMMENDATION_PURGE_PATH)).hasSize(1);
         assertThat(keycloak.recorded("DELETE", ADMIN_USER_PATH)).isEmpty();
         assertThat(libraryService.recorded("POST", LEDGER_COMPLETE_PATH)).isEmpty();
     }
