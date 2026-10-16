@@ -9,11 +9,14 @@ public class WebMvcConfig implements WebMvcConfigurer {
 
     private final AuthorizeRateLimitInterceptor authorizeRateLimitInterceptor;
     private final RecommendationRateLimitInterceptor recommendationRateLimitInterceptor;
+    private final ExportRateLimitInterceptor exportRateLimitInterceptor;
 
     public WebMvcConfig(AuthorizeRateLimitInterceptor authorizeRateLimitInterceptor,
-                        RecommendationRateLimitInterceptor recommendationRateLimitInterceptor) {
+                        RecommendationRateLimitInterceptor recommendationRateLimitInterceptor,
+                        ExportRateLimitInterceptor exportRateLimitInterceptor) {
         this.authorizeRateLimitInterceptor = authorizeRateLimitInterceptor;
         this.recommendationRateLimitInterceptor = recommendationRateLimitInterceptor;
+        this.exportRateLimitInterceptor = exportRateLimitInterceptor;
     }
 
     @Override
@@ -25,5 +28,7 @@ public class WebMvcConfig implements WebMvcConfigurer {
                 .addPathPatterns("/api/v1/auth/authorize");
         registry.addInterceptor(recommendationRateLimitInterceptor)
                 .addPathPatterns("/api/v1/recommendations/**");
+        registry.addInterceptor(exportRateLimitInterceptor)
+                .addPathPatterns("/api/v1/auth/account/export");
     }
 }
