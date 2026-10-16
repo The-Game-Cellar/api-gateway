@@ -49,60 +49,63 @@ public class KeycloakAdminClient {
     // Partial update: Keycloak leaves every field the body omits as it was. Disabling also ends
     // token refresh, since the token endpoint checks the flag on every refresh grant.
     public Outcome setEnabled(String userId, boolean enabled) {
-        return tolerateNotFound(() -> execute(token -> restClient.put()
+        return execute(token -> restClient.put()
                 .uri(userUri(userId))
                 .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
                 .contentType(MediaType.APPLICATION_JSON)
                 .body(Map.of("enabled", enabled))
                 .retrieve()
-                .toBodilessEntity()));
+                .toBodilessEntity());
     }
 
     public Outcome logout(String userId) {
-        return tolerateNotFound(() -> execute(token -> restClient.post()
+        return execute(token -> restClient.post()
                 .uri(userUri(userId) + "/logout")
                 .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
                 .retrieve()
-                .toBodilessEntity()));
+                .toBodilessEntity());
     }
 
     public Outcome delete(String userId) {
-        return tolerateNotFound(() -> execute(token -> restClient.delete()
+        return execute(token -> restClient.delete()
                 .uri(userUri(userId))
                 .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
                 .retrieve()
-                .toBodilessEntity()));
+                .toBodilessEntity());
     }
 
     private String userUri(String userId) {
         return keycloakUrl + "/admin/realms/" + realm + "/users/" + userId;
     }
 
-    // A user that is already gone is the state every caller here wants, not a failure.
-    private static Outcome tolerateNotFound(Runnable call) {
+    // Retry once with a fresh token on 401 and 403. A 401 is a dead cached token; a 403 can be
+    // a token issued before the service account was granted a role, since roles are baked in
+    // at issuance, and without the retry a grant made mid-flight only takes effect on restart.
+    // Every token fetch stays outside tolerateNotFound: a 404 from the token endpoint is a wrong
+    // realm or URL, and read as a user already gone it would end a deletion that never happened.
+    private Outcome execute(Consumer<String> action) {
+        String token = getToken();
         try {
-            call.run();
-            return Outcome.DONE;
+            return tolerateNotFound(action, token);
         } catch (RestClientResponseException e) {
-            if (e.getStatusCode().value() == 404) {
-                return Outcome.ALREADY_GONE;
+            int status = e.getStatusCode().value();
+            if (status == 401 || status == 403) {
+                cachedToken.set(null);
+                String fresh = refreshToken();
+                return tolerateNotFound(action, fresh);
             }
             throw e;
         }
     }
 
-    // Retry once with a fresh token on 401 and 403. A 401 is a dead cached token; a 403 can be
-    // a token issued before the service account was granted a role, since roles are baked in
-    // at issuance, and without the retry a grant made mid-flight only takes effect on restart.
-    private void execute(Consumer<String> action) {
+    // A user that is already gone is the state every caller here wants, not a failure.
+    private static Outcome tolerateNotFound(Consumer<String> action, String token) {
         try {
-            action.accept(getToken());
+            action.accept(token);
+            return Outcome.DONE;
         } catch (RestClientResponseException e) {
-            int status = e.getStatusCode().value();
-            if (status == 401 || status == 403) {
-                cachedToken.set(null);
-                action.accept(refreshToken());
-                return;
+            if (e.getStatusCode().value() == 404) {
+                return Outcome.ALREADY_GONE;
             }
             throw e;
         }
