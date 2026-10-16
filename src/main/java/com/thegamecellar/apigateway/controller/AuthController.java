@@ -76,6 +76,9 @@ public class AuthController {
     @Value("${LIBRARY_SERVICE_URL:http://localhost:8082}")
     private String libraryServiceUrl;
 
+    @Value("${RECOMMENDATION_SERVICE_URL:http://localhost:8083}")
+    private String recommendationServiceUrl;
+
     // Browser-facing Keycloak origin. Differs from KEYCLOAK_AUTH_SERVER_URL in production,
     // where the gateway reaches Keycloak on the compose network but the user's browser cannot.
     @Value("${KEYCLOAK_PUBLIC_URL:${KEYCLOAK_AUTH_SERVER_URL:http://localhost:8080}}")
@@ -321,6 +324,20 @@ public class AuthController {
         } catch (RestClientException e) {
             // A disabled user cannot refresh, so a failed logout only leaves an SSO cookie that opens nothing.
             log.warn("Account delete: could not end sessions for userId={}: {}", userId, describe(e));
+        }
+
+        // Recommendation data is derived from the library and rebuilt on the next visit, so it goes
+        // first: a library purge failing after it loses nothing, and it needs no retry path.
+        try {
+            restClient.delete()
+                    .uri(recommendationServiceUrl + "/api/v1/recommendations/account")
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken)
+                    .retrieve()
+                    .toBodilessEntity();
+        } catch (RestClientException e) {
+            log.error("Account delete: recommendation purge failed for userId={}: {}", userId, describe(e));
+            reEnable(userId);
+            return ResponseEntity.status(502).body(Map.of("error", "Could not purge recommendation data, try again"));
         }
 
         try {
