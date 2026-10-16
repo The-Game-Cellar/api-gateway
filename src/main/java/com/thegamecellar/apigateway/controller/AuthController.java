@@ -38,6 +38,8 @@ import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.Base64;
 import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 @RestController
@@ -383,6 +385,90 @@ public class AuthController {
             log.error("Account delete: userId={} left disabled with its library intact after a failed purge; re-enable by hand",
                     userId, e);
         }
+    }
+
+    // The one export the Profile page offers: the account from Keycloak beside each service's own
+    // export. Complete or nothing, since a file missing a part would still read as everything.
+    @GetMapping("/account/export")
+    public ResponseEntity<?> exportAccount(HttpServletRequest request) {
+        String accessToken = readCookie(request, "access_token");
+        if (accessToken == null || accessToken.isBlank()) {
+            return ResponseEntity.status(401).body(Map.of("error", "Not authenticated"));
+        }
+        Map<?, ?> claims = parseJwtPayload(accessToken);
+        String userId = (String) claims.get("sub");
+        if (userId == null) {
+            return ResponseEntity.status(401).body(Map.of("error", "Invalid token"));
+        }
+
+        try {
+            Map<String, Object> export = new LinkedHashMap<>();
+            export.put("exportedAt", Instant.now().toString());
+            export.put("account", accountExport(userId));
+            export.put("library", serviceExport(libraryServiceUrl + "/api/v1/library/account/export", accessToken));
+            export.put("recommendations", serviceExport(
+                    recommendationServiceUrl + "/api/v1/recommendations/account/export", accessToken));
+            return ResponseEntity.ok(export);
+        } catch (RestClientException e) {
+            log.error("Account export failed for userId={}: {}", userId, describe(e));
+            return ResponseEntity.status(502).body(Map.of("error", "Could not gather all of your data, try again"));
+        }
+    }
+
+    // What the policy lists under the account. Of a credential only its kind, label and date
+    // leave Keycloak, never its secret or hashing parameters.
+    private Map<String, Object> accountExport(String userId) {
+        Map<String, Object> user = keycloakAdmin.getUser(userId);
+        if (user == null) {
+            throw new RestClientException("Keycloak returned no user record");
+        }
+        Map<String, Object> account = new LinkedHashMap<>();
+        account.put("userId", userId);
+        account.put("username", user.get("username"));
+        account.put("email", user.get("email"));
+        account.put("emailVerified", user.get("emailVerified"));
+        account.put("firstName", user.get("firstName"));
+        account.put("lastName", user.get("lastName"));
+        account.put("createdAt", isoFromEpochMillis(user.get("createdTimestamp")));
+        account.put("credentials", nullToEmpty(keycloakAdmin.getCredentials(userId)).stream()
+                .map(credential -> {
+                    Map<String, Object> entry = new LinkedHashMap<>();
+                    entry.put("type", credential.get("type"));
+                    entry.put("label", credential.get("userLabel"));
+                    entry.put("createdAt", isoFromEpochMillis(credential.get("createdDate")));
+                    return entry;
+                })
+                .toList());
+        account.put("sessions", nullToEmpty(keycloakAdmin.getSessions(userId)).stream()
+                .map(session -> {
+                    Map<String, Object> entry = new LinkedHashMap<>();
+                    entry.put("ipAddress", session.get("ipAddress"));
+                    entry.put("startedAt", isoFromEpochMillis(session.get("start")));
+                    entry.put("lastAccessAt", isoFromEpochMillis(session.get("lastAccess")));
+                    return entry;
+                })
+                .toList());
+        return account;
+    }
+
+    private Object serviceExport(String url, String accessToken) {
+        Object body = restClient.get()
+                .uri(url)
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken)
+                .retrieve()
+                .body(Map.class);
+        if (body == null) {
+            throw new RestClientException("Empty export from " + url);
+        }
+        return body;
+    }
+
+    private static <T> List<T> nullToEmpty(List<T> list) {
+        return list == null ? List.of() : list;
+    }
+
+    private static String isoFromEpochMillis(Object value) {
+        return value instanceof Number millis ? Instant.ofEpochMilli(millis.longValue()).toString() : null;
     }
 
     private static String describe(RestClientException e) {

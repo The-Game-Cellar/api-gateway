@@ -3,6 +3,7 @@ package com.thegamecellar.apigateway.client;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
@@ -11,12 +12,14 @@ import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
 
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
+import java.util.function.Function;
 
 // Every Admin REST call the gateway makes, sharing one cached service-account token.
-// Used by the account deletion request and by the job that finishes deletions it left behind.
+// Used by account deletion and export, and by the job that finishes deletions left behind.
 @Component
 public class KeycloakAdminClient {
 
@@ -74,8 +77,36 @@ public class KeycloakAdminClient {
                 .toBodilessEntity());
     }
 
+    public Map<String, Object> getUser(String userId) {
+        return read(token -> restClient.get()
+                .uri(userUri(userId))
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+                .retrieve()
+                .body(new ParameterizedTypeReference<Map<String, Object>>() {}));
+    }
+
+    public List<Map<String, Object>> getCredentials(String userId) {
+        return read(token -> restClient.get()
+                .uri(userUri(userId) + "/credentials")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+                .retrieve()
+                .body(new ParameterizedTypeReference<List<Map<String, Object>>>() {}));
+    }
+
+    public List<Map<String, Object>> getSessions(String userId) {
+        return read(token -> restClient.get()
+                .uri(userUri(userId) + "/sessions")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+                .retrieve()
+                .body(new ParameterizedTypeReference<List<Map<String, Object>>>() {}));
+    }
+
     private String userUri(String userId) {
         return keycloakUrl + "/admin/realms/" + realm + "/users/" + userId;
+    }
+
+    private Outcome execute(Consumer<String> action) {
+        return read(token -> tolerateNotFound(action, token));
     }
 
     // Retry once with a fresh token on 401 and 403. A 401 is a dead cached token; a 403 can be
@@ -83,16 +114,16 @@ public class KeycloakAdminClient {
     // at issuance, and without the retry a grant made mid-flight only takes effect on restart.
     // Every token fetch stays outside tolerateNotFound: a 404 from the token endpoint is a wrong
     // realm or URL, and read as a user already gone it would end a deletion that never happened.
-    private Outcome execute(Consumer<String> action) {
+    // A plain read has no not-found tolerance at all, so a missing user fails it.
+    private <T> T read(Function<String, T> call) {
         String token = getToken();
         try {
-            return tolerateNotFound(action, token);
+            return call.apply(token);
         } catch (RestClientResponseException e) {
             int status = e.getStatusCode().value();
             if (status == 401 || status == 403) {
                 cachedToken.set(null);
-                String fresh = refreshToken();
-                return tolerateNotFound(action, fresh);
+                return call.apply(refreshToken());
             }
             throw e;
         }
