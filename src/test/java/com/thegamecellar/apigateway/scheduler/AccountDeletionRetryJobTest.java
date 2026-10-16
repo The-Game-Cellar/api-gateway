@@ -59,6 +59,25 @@ class AccountDeletionRetryJobTest extends GatewayTestBase {
         libraryService.on("GET", PENDING_PATH, StubHttpServer.StubResponse.json(200, body.append(']').toString()));
     }
 
+    // A token endpoint answering 404 is a broken realm or URL. Read as "user already gone" it
+    // would close the ledger row with the identity still in Keycloak, and nothing retries a
+    // closed row.
+    @Test
+    void aTokenEndpointAnswering404LeavesTheLedgerRowOpen() {
+        String user = "aaaaaaaa-0000-4000-8000-000000000404";
+        pending(user);
+        forgetAdminToken();
+        keycloak.on("POST", TOKEN_PATH, StubHttpServer.StubResponse.json(404, "{\"error\":\"Realm does not exist\"}"));
+        keycloak.on("PUT", adminUserPath(user), StubHttpServer.StubResponse.empty(204));
+        keycloak.on("DELETE", adminUserPath(user), StubHttpServer.StubResponse.empty(204));
+        libraryService.on("POST", completePath(user), StubHttpServer.StubResponse.empty(204));
+
+        job.run();
+
+        assertThat(keycloak.recorded("DELETE", adminUserPath(user))).isEmpty();
+        assertThat(libraryService.recorded("POST", completePath(user))).isEmpty();
+    }
+
     @Test
     void finishesAPendingDeletionAndClosesItsLedgerRow() {
         String user = "aaaaaaaa-0000-4000-8000-000000000001";

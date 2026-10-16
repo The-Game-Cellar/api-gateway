@@ -128,6 +128,45 @@ class AccountDeletionTest extends GatewayTestBase {
         assertThat(keycloak.recorded("DELETE", ADMIN_USER_PATH)).isEmpty();
     }
 
+    // A 404 from the token endpoint is a wrong realm or URL, never a user that is already gone.
+    // Read as gone, the request would purge both services and answer "Account deleted" while
+    // the identity stayed in Keycloak, enabled.
+    @Test
+    void aTokenEndpointAnswering404DeletesNothing() throws Exception {
+        freshlyAuthenticated("fresh");
+        forgetAdminToken();
+        keycloak.on("POST", TOKEN_PATH, StubHttpServer.StubResponse.json(404, "{\"error\":\"Realm does not exist\"}"));
+
+        mvc.perform(delete("/api/v1/auth/account").cookie(accessCookie("fresh")))
+                .andExpect(status().isBadGateway())
+                .andExpect(jsonPath("$.error").value("Could not reach the identity provider. Nothing was deleted, try again."))
+                .andExpect(header().doesNotExist("Set-Cookie"));
+
+        assertThat(recommendationService.recorded()).isEmpty();
+        assertThat(libraryService.recorded()).isEmpty();
+        assertThat(keycloak.recorded("DELETE", ADMIN_USER_PATH)).isEmpty();
+    }
+
+    // Same failure on the second fetch, after a cached token was rejected.
+    @Test
+    void aTokenEndpointAnswering404OnTheRefetchDeletesNothing() throws Exception {
+        freshlyAuthenticated("fresh");
+        forgetAdminToken();
+        List<Integer> tokenAnswers = new java.util.concurrent.CopyOnWriteArrayList<>(List.of(200, 404));
+        keycloak.on("POST", TOKEN_PATH, request -> tokenAnswers.remove(0) == 200
+                ? StubHttpServer.StubResponse.json(200, "{\"access_token\":\"admin-token\",\"expires_in\":60}")
+                : StubHttpServer.StubResponse.json(404, "{\"error\":\"Realm does not exist\"}"));
+        keycloak.on("PUT", ADMIN_USER_PATH, StubHttpServer.StubResponse.empty(401));
+
+        mvc.perform(delete("/api/v1/auth/account").cookie(accessCookie("fresh")))
+                .andExpect(status().isBadGateway())
+                .andExpect(header().doesNotExist("Set-Cookie"));
+
+        assertThat(recommendationService.recorded()).isEmpty();
+        assertThat(libraryService.recorded()).isEmpty();
+        assertThat(keycloak.recorded("DELETE", ADMIN_USER_PATH)).isEmpty();
+    }
+
     @Test
     void recommendationPurgeFailingReEnablesTheIdentityAndNeverReachesTheLibrary() throws Exception {
         freshlyAuthenticated("fresh");

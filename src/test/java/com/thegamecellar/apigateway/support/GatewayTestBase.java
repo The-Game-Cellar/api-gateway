@@ -1,5 +1,6 @@
 package com.thegamecellar.apigateway.support;
 
+import com.thegamecellar.apigateway.client.KeycloakAdminClient;
 import jakarta.servlet.http.Cookie;
 import org.junit.jupiter.api.BeforeEach;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -12,11 +13,13 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doReturn;
@@ -59,6 +62,9 @@ public abstract class GatewayTestBase {
 
     @MockitoBean
     protected JwtDecoder jwtDecoder;
+
+    @Autowired
+    private KeycloakAdminClient keycloakAdminClient;
 
     @BeforeEach
     void resetStubsAndDecoder() {
@@ -111,6 +117,12 @@ public abstract class GatewayTestBase {
 
     protected Jwt issueWithRoles(String tokenValue, String subject, String... roles) {
         return issue(tokenValue, subject, Map.of("realm_access", Map.of("roles", List.of(roles))));
+    }
+
+    // The admin token is cached for the life of the shared context, so whether an admin call
+    // fetches one depends on the tests before it. Forgetting it makes the next call fetch.
+    protected void forgetAdminToken() {
+        ((AtomicReference<?>) ReflectionTestUtils.getField(keycloakAdminClient, "cachedToken")).set(null);
     }
 
     protected static Cookie accessCookie(String token) {
