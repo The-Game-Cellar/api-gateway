@@ -44,6 +44,9 @@ class RouteMappingTest extends GatewayTestBase {
         };
         String pathOnly = path.contains("?") ? path.substring(0, path.indexOf('?')) : path;
         assertThat(owner.recorded("GET", pathOnly)).hasSize(1);
+        // The access cookie leaves every route as the Authorization header the services read.
+        assertThat(owner.recorded("GET", pathOnly).get(0).header("Authorization"))
+                .isEqualTo("Bearer " + token("root-token"));
     }
 
     @ParameterizedTest

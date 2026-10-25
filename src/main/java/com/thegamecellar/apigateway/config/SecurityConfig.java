@@ -19,6 +19,8 @@ import org.springframework.security.oauth2.jwt.JwtValidators;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.servlet.util.matcher.PathPatternRequestMatcher;
+import org.springframework.security.web.util.matcher.RequestMatcher;
 import org.springframework.web.cors.CorsConfigurationSource;
 
 import java.util.Collection;
@@ -30,6 +32,11 @@ import java.util.stream.Collectors;
 @Configuration
 @EnableWebSecurity
 public class SecurityConfig {
+
+    // These endpoints read and validate the access cookie themselves. Left to the resource-server
+    // filter, a cookie it rejects would be answered 401 before them: logout could not clear it and
+    // sign-in could not start until the cookie expired.
+    private static final RequestMatcher AUTH_ENDPOINTS = PathPatternRequestMatcher.withDefaults().matcher("/api/v1/auth/**");
 
     private final CorsConfigurationSource corsConfigurationSource;
 
@@ -53,6 +60,7 @@ public class SecurityConfig {
             .oauth2ResourceServer(oauth2 -> oauth2
                 .jwt(jwt -> jwt.jwtAuthenticationConverter(keycloakJwtAuthenticationConverter()))
                 .bearerTokenResolver(request -> {
+                    if (AUTH_ENDPOINTS.matches(request)) return null;
                     String header = request.getHeader("Authorization");
                     if (header != null && header.startsWith("Bearer ")) return header.substring(7);
                     Cookie[] cookies = request.getCookies();

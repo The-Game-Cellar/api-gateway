@@ -32,12 +32,12 @@ class SecurityChainTest extends GatewayTestBase {
     void bearerHeaderIsAcceptedAndForwardedAsIs() throws Exception {
         issue("alice-token", "alice");
 
-        mvc.perform(get("/api/v1/library/games").header("Authorization", "Bearer alice-token"))
+        mvc.perform(get("/api/v1/library/games").header("Authorization", "Bearer " + token("alice-token")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.from").value("library"));
 
         StubHttpServer.RecordedRequest forwarded = libraryService.recorded("GET", "/api/v1/library/games").get(0);
-        assertThat(forwarded.header("Authorization")).isEqualTo("Bearer alice-token");
+        assertThat(forwarded.header("Authorization")).isEqualTo("Bearer " + token("alice-token"));
     }
 
     // The browser never holds the token: it arrives as an httpOnly cookie and leaves the
@@ -50,7 +50,7 @@ class SecurityChainTest extends GatewayTestBase {
                 .andExpect(status().isOk());
 
         StubHttpServer.RecordedRequest forwarded = libraryService.recorded("GET", "/api/v1/library/games").get(0);
-        assertThat(forwarded.header("Authorization")).isEqualTo("Bearer alice-token");
+        assertThat(forwarded.header("Authorization")).isEqualTo("Bearer " + token("alice-token"));
     }
 
     @Test

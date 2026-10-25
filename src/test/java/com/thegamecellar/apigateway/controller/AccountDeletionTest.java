@@ -1,15 +1,22 @@
 package com.thegamecellar.apigateway.controller;
 
+import ch.qos.logback.classic.Level;
 import com.thegamecellar.apigateway.support.GatewayTestBase;
+import com.thegamecellar.apigateway.support.LogCapture;
 import com.thegamecellar.apigateway.support.StubHttpServer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.hamcrest.Matchers.allOf;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.hasItems;
@@ -67,8 +74,8 @@ class AccountDeletionTest extends GatewayTestBase {
 
         assertThat(disable.body()).contains("\"enabled\":false");
         assertThat(disable.header("Authorization")).isEqualTo("Bearer admin-token");
-        assertThat(recommendations.header("Authorization")).isEqualTo("Bearer fresh");
-        assertThat(purge.header("Authorization")).isEqualTo("Bearer fresh");
+        assertThat(recommendations.header("Authorization")).isEqualTo("Bearer " + token("fresh"));
+        assertThat(purge.header("Authorization")).isEqualTo("Bearer " + token("fresh"));
         assertThat(identity.header("Authorization")).isEqualTo("Bearer admin-token");
         assertThat(complete.header("X-Internal-Token")).isEqualTo("test-internal-token");
         assertThat(disable.seq()).isLessThan(logout.seq());
@@ -84,10 +91,9 @@ class AccountDeletionTest extends GatewayTestBase {
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.error").value("Not authenticated"));
 
-        // A cookie the decoder rejects never reaches the controller: the resource-server
-        // filter reads the same cookie and answers 401 itself, with no body.
         mvc.perform(delete("/api/v1/auth/account").cookie(accessCookie("forged")))
-                .andExpect(status().isUnauthorized());
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.error").value("Invalid token"));
 
         assertThat(recommendationService.recorded()).isEmpty();
         assertThat(libraryService.recorded()).isEmpty();
@@ -238,36 +244,189 @@ class AccountDeletionTest extends GatewayTestBase {
         assertThat(keycloak.recorded("DELETE", ADMIN_USER_PATH)).hasSize(1);
     }
 
-    // Roles are baked into a token when it is issued, so a 403 on a cached token may only mean
-    // the grant is newer than the token: one fresh token and one retry, then the answer stands.
-    @Test
-    void aForbiddenAdminCallGetsOneFreshTokenBeforeItCounts() throws Exception {
-        freshlyAuthenticated("fresh");
-        List<Integer> answers = new java.util.concurrent.CopyOnWriteArrayList<>(List.of(403, 204));
-        keycloak.on("PUT", ADMIN_USER_PATH, request -> StubHttpServer.StubResponse.empty(answers.remove(0)));
-
-        mvc.perform(delete("/api/v1/auth/account").cookie(accessCookie("fresh")))
-                .andExpect(status().isOk());
-
-        assertThat(keycloak.recorded("PUT", ADMIN_USER_PATH)).hasSize(2);
-        // At least one: the first call may have used a token cached by an earlier test.
-        assertThat(keycloak.recorded("POST", TOKEN_PATH).stream()
-                .filter(r -> r.body().contains("client_credentials")).count()).isGreaterThanOrEqualTo(1);
+    // Each admin token the stub hands out is numbered, so a test can tell a fresh one from a reused one.
+    private AtomicInteger numberedAdminTokens() {
+        forgetAdminToken();
+        AtomicInteger issued = new AtomicInteger();
+        keycloak.on("POST", TOKEN_PATH, request -> StubHttpServer.StubResponse.json(200,
+                "{\"access_token\":\"admin-token-" + issued.incrementAndGet() + "\",\"expires_in\":60}"));
+        return issued;
     }
 
-    // A 401 from the admin API means the cached service-account token is dead, not that the
-    // caller lacks rights: the token is fetched again and the call retried once.
-    @Test
-    void aRejectedAdminTokenIsRefreshedAndTheCallRetriedOnce() throws Exception {
+    // A 401 means the cached service-account token is dead. A 403 can mean the token predates a
+    // role grant, since roles are baked in at issuance. Either way the retry must carry a token
+    // fetched after the refusal, not the one that was just refused.
+    @ParameterizedTest
+    @ValueSource(ints = {401, 403})
+    void aRefusedAdminCallIsRetriedOnceWithANewlyFetchedToken(int refusal) throws Exception {
         freshlyAuthenticated("fresh");
-        List<Integer> answers = new java.util.concurrent.CopyOnWriteArrayList<>(List.of(401, 204));
-        keycloak.on("PUT", ADMIN_USER_PATH, request -> StubHttpServer.StubResponse.empty(answers.remove(0)));
+        AtomicInteger issued = numberedAdminTokens();
+        keycloak.on("PUT", ADMIN_USER_PATH, request -> "Bearer admin-token-1".equals(request.header("Authorization"))
+                ? StubHttpServer.StubResponse.empty(refusal)
+                : StubHttpServer.StubResponse.empty(204));
 
         mvc.perform(delete("/api/v1/auth/account").cookie(accessCookie("fresh")))
                 .andExpect(status().isOk());
 
+        List<StubHttpServer.RecordedRequest> disables = keycloak.recorded("PUT", ADMIN_USER_PATH);
+        assertThat(disables).extracting(r -> r.header("Authorization"))
+                .containsExactly("Bearer admin-token-1", "Bearer admin-token-2");
+        assertThat(issued.get()).isEqualTo(2);
+    }
+
+    // One retry, then the answer stands: a service account that really lacks the role is not
+    // asked a third time, and nothing is deleted.
+    @Test
+    void aRefusalThatSurvivesTheFreshTokenStandsAndDeletesNothing() throws Exception {
+        freshlyAuthenticated("fresh");
+        AtomicInteger issued = numberedAdminTokens();
+        keycloak.on("PUT", ADMIN_USER_PATH, StubHttpServer.StubResponse.empty(403));
+
+        mvc.perform(delete("/api/v1/auth/account").cookie(accessCookie("fresh")))
+                .andExpect(status().isBadGateway())
+                .andExpect(header().doesNotExist("Set-Cookie"));
+
         assertThat(keycloak.recorded("PUT", ADMIN_USER_PATH)).hasSize(2);
-        assertThat(keycloak.recorded("POST", TOKEN_PATH).stream()
-                .filter(r -> r.body().contains("client_credentials")).count()).isGreaterThanOrEqualTo(1);
+        assertThat(issued.get()).isEqualTo(2);
+        assertThat(recommendationService.recorded()).isEmpty();
+        assertThat(libraryService.recorded()).isEmpty();
+    }
+
+    @Test
+    void refusedWhenTheTokenNamesNoSubject() throws Exception {
+        issueBare("no-sub", null, Map.of("azp", CLIENT_ID, "auth_time", Instant.now().getEpochSecond()));
+
+        mvc.perform(delete("/api/v1/auth/account").cookie(accessCookie("no-sub")))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.error").value("Invalid token"));
+
+        assertThat(keycloak.recorded()).isEmpty();
+        assertThat(recommendationService.recorded()).isEmpty();
+        assertThat(libraryService.recorded()).isEmpty();
+    }
+
+    // The session lives in the cookie. A bearer header passes the security chain but names no
+    // session, so it cannot delete an account.
+    @Test
+    void aBearerHeaderWithoutTheCookieDeletesNothing() throws Exception {
+        freshlyAuthenticated("fresh");
+
+        mvc.perform(delete("/api/v1/auth/account").header("Authorization", "Bearer " + token("fresh")))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.error").value("Not authenticated"));
+
+        assertThat(keycloak.recorded()).isEmpty();
+        assertThat(recommendationService.recorded()).isEmpty();
+        assertThat(libraryService.recorded()).isEmpty();
+    }
+
+    // Five minutes plus thirty seconds of clock skew, with two seconds either side so the test
+    // never races the clock.
+    @Test
+    void theReauthenticationWindowIsFiveMinutesPlusThirtySecondsOfSkew() throws Exception {
+        issue("outside", USER, Map.of("auth_time", Instant.now().minusSeconds(332).getEpochSecond()));
+        mvc.perform(delete("/api/v1/auth/account").cookie(accessCookie("outside")))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error").value("Re-authentication required"));
+        assertThat(keycloak.recorded()).isEmpty();
+
+        issue("inside", USER, Map.of("auth_time", Instant.now().minusSeconds(328).getEpochSecond()));
+        mvc.perform(delete("/api/v1/auth/account").cookie(accessCookie("inside")))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void anIdentityProviderThatNeverAnswersTheDisableDeletesNothing() throws Exception {
+        freshlyAuthenticated("fresh");
+        keycloak.on("PUT", ADMIN_USER_PATH, StubHttpServer.after(Duration.ofSeconds(3), StubHttpServer.StubResponse.empty(204)));
+
+        assertTimeoutPreemptively(Duration.ofSeconds(3), () ->
+                mvc.perform(delete("/api/v1/auth/account").cookie(accessCookie("fresh")))
+                        .andExpect(status().isBadGateway())
+                        .andExpect(jsonPath("$.error").value("Could not reach the identity provider. Nothing was deleted, try again."))
+                        .andExpect(header().doesNotExist("Set-Cookie")));
+
+        assertThat(recommendationService.recorded()).isEmpty();
+        assertThat(libraryService.recorded()).isEmpty();
+        assertThat(keycloak.recorded("DELETE", ADMIN_USER_PATH)).isEmpty();
+    }
+
+    // A purge that never answers is a failed purge: the identity is switched back on and the
+    // account stays usable.
+    @ParameterizedTest
+    @ValueSource(strings = {"recommendation", "library"})
+    void aPurgeThatNeverAnswersReEnablesTheIdentity(String hanging) throws Exception {
+        freshlyAuthenticated("fresh");
+        if (hanging.equals("recommendation")) {
+            recommendationService.on("DELETE", RECOMMENDATION_PURGE_PATH,
+                    StubHttpServer.after(Duration.ofSeconds(3), StubHttpServer.StubResponse.empty(200)));
+        } else {
+            libraryService.on("DELETE", LIBRARY_PURGE_PATH,
+                    StubHttpServer.after(Duration.ofSeconds(3), StubHttpServer.StubResponse.empty(200)));
+        }
+
+        assertTimeoutPreemptively(Duration.ofSeconds(3), () ->
+                mvc.perform(delete("/api/v1/auth/account").cookie(accessCookie("fresh")))
+                        .andExpect(status().isBadGateway())
+                        .andExpect(jsonPath("$.error").value("Could not purge " + hanging + " data, try again"))
+                        .andExpect(header().doesNotExist("Set-Cookie")));
+
+        List<StubHttpServer.RecordedRequest> updates = keycloak.recorded("PUT", ADMIN_USER_PATH);
+        assertThat(updates).extracting(StubHttpServer.RecordedRequest::body)
+                .satisfiesExactly(
+                        body -> assertThat(body).contains("\"enabled\":false"),
+                        body -> assertThat(body).contains("\"enabled\":true"));
+        assertThat(keycloak.recorded("DELETE", ADMIN_USER_PATH)).isEmpty();
+    }
+
+    // The user is left disabled with their data intact, which nobody would notice without the
+    // ERROR: it is the event that reaches Sentry and says to re-enable by hand.
+    @Test
+    void aReEnableThatFailsAfterAFailedPurgeIsReportedAsAnError() throws Exception {
+        freshlyAuthenticated("fresh");
+        recommendationService.on("DELETE", RECOMMENDATION_PURGE_PATH, StubHttpServer.StubResponse.json(500, "{\"error\":\"db down\"}"));
+        keycloak.on("PUT", ADMIN_USER_PATH, request -> request.body().contains("\"enabled\":true")
+                ? StubHttpServer.StubResponse.json(500, "{\"error\":\"down\"}")
+                : StubHttpServer.StubResponse.empty(204));
+
+        try (LogCapture logs = LogCapture.of(AuthController.class)) {
+            mvc.perform(delete("/api/v1/auth/account").cookie(accessCookie("fresh")))
+                    .andExpect(status().isBadGateway())
+                    .andExpect(jsonPath("$.error").value("Could not purge recommendation data, try again"));
+
+            assertThat(logs.messages(Level.ERROR))
+                    .anySatisfy(message -> assertThat(message).contains(USER).contains("re-enable by hand"));
+        }
+        assertThat(libraryService.recorded()).isEmpty();
+        assertThat(keycloak.recorded("DELETE", ADMIN_USER_PATH)).isEmpty();
+    }
+
+    // An identity Keycloak no longer has is the state a delete wants, so the account counts as
+    // deleted and the ledger is closed.
+    @Test
+    void anIdentityAlreadyGoneAtTheDeleteCountsAsDeleted() throws Exception {
+        freshlyAuthenticated("fresh");
+        keycloak.on("DELETE", ADMIN_USER_PATH, StubHttpServer.StubResponse.json(404, "{\"error\":\"User not found\"}"));
+
+        mvc.perform(delete("/api/v1/auth/account").cookie(accessCookie("fresh")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.message").value("Account deleted"));
+
+        assertThat(libraryService.recorded("POST", LEDGER_COMPLETE_PATH)).hasSize(1);
+    }
+
+    // The cookies are cleared on the paths they were set on, with the attributes they were set
+    // with: a clear on any other path leaves the original in the browser.
+    @Test
+    void theClearingCookiesMatchThePathsAndAttributesTheCookiesWereSetWith() throws Exception {
+        freshlyAuthenticated("fresh");
+
+        mvc.perform(delete("/api/v1/auth/account").cookie(accessCookie("fresh")))
+                .andExpect(status().isOk())
+                .andExpect(header().stringValues("Set-Cookie", hasItems(
+                        allOf(startsWith("access_token=;"), containsString("Path=/;"), containsString("Max-Age=0;"),
+                                containsString("HttpOnly"), containsString("SameSite=Strict")),
+                        allOf(startsWith("refresh_token=;"), containsString("Path=/api/v1/auth;"), containsString("Max-Age=0;"),
+                                containsString("HttpOnly"), containsString("SameSite=Strict")))));
     }
 }

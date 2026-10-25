@@ -11,9 +11,6 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.security.core.Authentication;
-import org.springframework.security.core.context.SecurityContextHolder;
-import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 import org.springframework.stereotype.Component;
 import org.springframework.web.servlet.HandlerInterceptor;
 
@@ -46,9 +43,11 @@ public class AuthorizeRateLimitInterceptor implements HandlerInterceptor {
     private ProxyManager<String> proxyManager;
 
     private final ClientIpResolver clientIpResolver;
+    private final AccessCookieUser accessCookieUser;
 
-    public AuthorizeRateLimitInterceptor(ClientIpResolver clientIpResolver) {
+    public AuthorizeRateLimitInterceptor(ClientIpResolver clientIpResolver, AccessCookieUser accessCookieUser) {
         this.clientIpResolver = clientIpResolver;
+        this.accessCookieUser = accessCookieUser;
     }
 
     private final Cache<String, Bucket> localBuckets = Caffeine.newBuilder()
@@ -59,19 +58,19 @@ public class AuthorizeRateLimitInterceptor implements HandlerInterceptor {
     @Override
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) throws Exception {
         AuthIntent intent = AuthIntent.from(request.getParameter("intent"));
-        Bucket bucket;
+        boolean allowed;
         String message;
         if (intent.isAccountAction()) {
-            bucket = resolveBucket("ratelimit:account-action:" + userOrAddress(request),
+            allowed = tryConsume("ratelimit:account-action:" + userOrAddress(request),
                     accountActionRequests, accountActionWindowSeconds);
             message = "Too many account changes. Please try again later.";
         } else {
-            bucket = resolveBucket("ratelimit:login:" + clientIpResolver.resolve(request),
+            allowed = tryConsume("ratelimit:login:" + clientIpResolver.resolve(request),
                     loginRequests, loginWindowSeconds);
             message = "Too many login attempts. Please try again later.";
         }
 
-        if (bucket.tryConsume(1)) {
+        if (allowed) {
             return true;
         }
 
@@ -84,20 +83,13 @@ public class AuthorizeRateLimitInterceptor implements HandlerInterceptor {
     // The action lands on the account the cookie names, so that is the fair unit to count.
     // Without a usable cookie there is no such account, and the address is all that is left.
     private String userOrAddress(HttpServletRequest request) {
-        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
-        if (auth instanceof JwtAuthenticationToken jwt) {
-            String sub = jwt.getToken().getSubject();
-            if (sub != null && !sub.isBlank()) return "user:" + sub;
-        }
-        return "ip:" + clientIpResolver.resolve(request);
+        String sub = accessCookieUser.subject(request);
+        return sub != null ? "user:" + sub : "ip:" + clientIpResolver.resolve(request);
     }
 
-    private Bucket resolveBucket(String key, int requests, int windowSeconds) {
+    private boolean tryConsume(String key, int requests, int windowSeconds) {
         Supplier<BucketConfiguration> configSupplier = () -> bucketConfig(requests, windowSeconds);
-        if (proxyManager != null) {
-            return proxyManager.builder().build(key, configSupplier);
-        }
-        return localBuckets.get(key, k -> Bucket.builder().addLimit(configSupplier.get().getBandwidths()[0]).build());
+        return RateLimitBuckets.tryConsume(proxyManager, localBuckets, key, configSupplier);
     }
 
     private static BucketConfiguration bucketConfig(int requests, int windowSeconds) {

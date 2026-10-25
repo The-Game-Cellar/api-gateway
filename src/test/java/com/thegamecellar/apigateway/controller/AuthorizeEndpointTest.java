@@ -107,6 +107,31 @@ class AuthorizeEndpointTest extends GatewayTestBase {
         assertThat(q.containsKey("kc_action")).isFalse();
     }
 
+    // A cookie the decoder rejects (a rotated realm key, a changed issuer) must not stand between
+    // the user and signing in again: the flow starts as if there were no cookie at all.
+    @Test
+    void aRejectedAccessCookieDoesNotStopTheFlowFromStarting() throws Exception {
+        MvcResult login = mvc.perform(get("/api/v1/auth/authorize").cookie(accessCookie("stale-or-forged")))
+                .andExpect(status().isFound())
+                .andReturn();
+        assertThat(withoutQuery(login)).isEqualTo(AUTH_ENDPOINT);
+
+        // An account action counts per user, and with no usable cookie per address instead.
+        MvcResult email = mvc.perform(get("/api/v1/auth/authorize").param("intent", "UPDATE_EMAIL")
+                        .cookie(accessCookie("stale-or-forged")))
+                .andExpect(status().isFound())
+                .andReturn();
+        MockHttpSession session = (MockHttpSession) email.getRequest().getSession(false);
+        assertThat(session.getAttribute("auth.email_before")).isNull();
+    }
+
+    // The auth endpoints never read a bearer header, so the security chain does not judge one there.
+    @Test
+    void aForgedBearerHeaderIsIgnoredOnTheAuthEndpoints() throws Exception {
+        mvc.perform(get("/api/v1/auth/authorize").header("Authorization", "Bearer forged"))
+                .andExpect(status().isFound());
+    }
+
     // An intent nobody defined must not become a privilege: it degrades to a plain login.
     @Test
     void unknownIntentIsAPlainLogin() throws Exception {

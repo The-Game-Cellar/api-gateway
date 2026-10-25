@@ -180,7 +180,9 @@ public class AuthController {
         }
 
         if (error != null) {
-            log.warn("Authorization callback returned error: {}", error);
+            // The value comes straight from the query string, so it is stripped of line breaks
+            // before it can forge a log line.
+            log.warn("Authorization callback returned error: {}", error.replaceAll("[\\r\\n\\t]", "_"));
             return redirect(failureLanding(intent));
         }
         // Keycloak ends the email-confirmation branch on its own page rather than returning a
@@ -243,8 +245,10 @@ public class AuthController {
                 status = emailBefore != null && emailBefore.equals(emailAfter) ? "pending" : "changed";
             }
             return redirect(actionLanding(intent, status));
-        } catch (RestClientResponseException e) {
-            log.error("Code exchange failed: status={}", e.getStatusCode());
+        } catch (RestClientException e) {
+            // A refusal, a timeout and an unreachable Keycloak all end the same way: the browser
+            // is mid-navigation, so it gets the failure page rather than a JSON error.
+            log.error("Code exchange failed: {}", describe(e));
             return redirect(failureLanding(intent));
         }
     }
@@ -263,9 +267,20 @@ public class AuthController {
 
         try {
             Map<?, ?> tokens = callKeycloak(form);
+            Map<?, ?> claims = parseJwtPayload((String) tokens.get("access_token"));
+            if (claims.isEmpty()) {
+                // Setting it would hand the app a session with no user in it, which every next
+                // request through this gateway refuses anyway.
+                log.warn("Refresh returned an access token this gateway rejects; check the issuer and signing key");
+                clearAuthCookies(response);
+                return ResponseEntity.status(401).body(Map.of("error", "Refresh token expired"));
+            }
             setAuthCookies(response, tokens);
-            return ResponseEntity.ok(extractUserInfo(tokens));
-        } catch (RestClientResponseException e) {
+            return ResponseEntity.ok(extractUserInfoFromClaims(claims));
+        } catch (RestClientException e) {
+            // Refused, unreachable or timed out ends the same way: the app answers any failed
+            // refresh by sending the user to sign in, and the realm rotates refresh tokens, so the
+            // old cookie is no use after a refresh Keycloak may have processed.
             clearAuthCookies(response);
             return ResponseEntity.status(401).body(Map.of("error", "Refresh token expired"));
         }
@@ -542,10 +557,15 @@ public class AuthController {
             form.add("client_id", clientId);
             form.add("refresh_token", refreshToken);
             Map<?, ?> tokens = callKeycloak(form);
+            Map<?, ?> accessClaims = parseJwtPayload((String) tokens.get("access_token"));
+            if (accessClaims.isEmpty()) {
+                log.warn("Out-of-band return got an access token this gateway rejects; no cookies set");
+                return redirect(appBaseUrl + "/dashboard");
+            }
             setAuthCookies(response, tokens);
 
             if (intent == AuthIntent.UPDATE_EMAIL) {
-                String emailAfter = (String) parseJwtPayload((String) tokens.get("access_token")).get("email");
+                String emailAfter = (String) accessClaims.get("email");
                 if (emailBefore != null && !emailBefore.equals(emailAfter)) {
                     return redirect(actionLanding(intent, "changed"));
                 }
@@ -556,8 +576,8 @@ public class AuthController {
                 return redirect(appBaseUrl + "/profile");
             }
             return redirect(appBaseUrl + "/dashboard");
-        } catch (RestClientResponseException e) {
-            log.warn("Out-of-band return could not refresh tokens: status={}", e.getStatusCode());
+        } catch (RestClientException e) {
+            log.warn("Out-of-band return could not refresh tokens: {}", describe(e));
             return redirect(appBaseUrl + "/dashboard");
         }
     }
@@ -590,15 +610,18 @@ public class AuthController {
         return authTimeMillis >= notBeforeMillis - AUTH_TIME_SKEW_MS;
     }
 
-    @SuppressWarnings("unchecked")
     private Map<?, ?> callKeycloak(MultiValueMap<String, String> form) {
         String tokenUrl = keycloakUrl + "/realms/" + realm + "/protocol/openid-connect/token";
-        return restClient.post()
+        Map<?, ?> tokens = restClient.post()
                 .uri(tokenUrl)
                 .contentType(MediaType.APPLICATION_FORM_URLENCODED)
                 .body(form)
                 .retrieve()
                 .body(Map.class);
+        if (tokens == null) {
+            throw new RestClientException("Empty response from the token endpoint");
+        }
+        return tokens;
     }
 
     private void setAuthCookies(HttpServletResponse response, Map<?, ?> tokens) {
@@ -641,11 +664,6 @@ public class AuthController {
 
     private void addCookie(HttpServletResponse response, ResponseCookie cookie) {
         response.addHeader(HttpHeaders.SET_COOKIE, cookie.toString());
-    }
-
-    private Map<String, Object> extractUserInfo(Map<?, ?> tokens) {
-        String accessToken = (String) tokens.get("access_token");
-        return extractUserInfoFromClaims(parseJwtPayload(accessToken));
     }
 
     private Map<String, Object> extractUserInfoFromClaims(Map<?, ?> claims) {

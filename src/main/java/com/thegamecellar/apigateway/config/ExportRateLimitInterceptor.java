@@ -10,14 +10,10 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.security.core.Authentication;
-import org.springframework.security.core.context.SecurityContextHolder;
-import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 import org.springframework.stereotype.Component;
 import org.springframework.web.servlet.HandlerInterceptor;
 
 import java.time.Duration;
-import java.util.function.Supplier;
 
 // Per-user budget on the account export. One export fans out to three Keycloak Admin calls and
 // a full read of the user's rows in two services, so a loop on it is the cheapest way for one
@@ -37,6 +33,12 @@ public class ExportRateLimitInterceptor implements HandlerInterceptor {
     @Autowired(required = false)
     private ProxyManager<String> proxyManager;
 
+    private final AccessCookieUser accessCookieUser;
+
+    public ExportRateLimitInterceptor(AccessCookieUser accessCookieUser) {
+        this.accessCookieUser = accessCookieUser;
+    }
+
     private final Cache<String, Bucket> localBuckets = Caffeine.newBuilder()
             .expireAfterAccess(Duration.ofMinutes(15))
             .maximumSize(10_000)
@@ -44,30 +46,18 @@ public class ExportRateLimitInterceptor implements HandlerInterceptor {
 
     @Override
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) throws Exception {
-        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
-        if (!(auth instanceof JwtAuthenticationToken jwt)) {
-            return true;
-        }
-        String sub = jwt.getToken().getSubject();
-        if (sub == null || sub.isBlank()) {
+        String sub = accessCookieUser.subject(request);
+        if (sub == null) {
             return true;
         }
 
-        if (resolveBucket("ratelimit:export:user:" + sub).tryConsume(1)) {
+        if (RateLimitBuckets.tryConsume(proxyManager, localBuckets, "ratelimit:export:user:" + sub, this::bucketConfig)) {
             return true;
         }
         response.setStatus(429);
         response.setContentType("application/json");
         response.getWriter().write("{\"error\":\"Too many exports. Please try again later.\"}");
         return false;
-    }
-
-    private Bucket resolveBucket(String key) {
-        Supplier<BucketConfiguration> configSupplier = this::bucketConfig;
-        if (proxyManager != null) {
-            return proxyManager.builder().build(key, configSupplier);
-        }
-        return localBuckets.get(key, k -> Bucket.builder().addLimit(configSupplier.get().getBandwidths()[0]).build());
     }
 
     private BucketConfiguration bucketConfig() {
