@@ -6,13 +6,10 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
-import org.springframework.security.oauth2.jwt.Jwt;
 
-import java.time.Instant;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.doReturn;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.not;
@@ -99,8 +96,8 @@ class AccountExportTest extends GatewayTestBase {
                 .andExpect(content().string(not(containsString("secretData"))))
                 .andExpect(content().string(not(containsString("credentialData"))));
 
-        assertThat(libraryService.recorded("GET", LIBRARY_EXPORT_PATH).get(0).header("Authorization")).isEqualTo("Bearer fresh");
-        assertThat(recommendationService.recorded("GET", RECOMMENDATION_EXPORT_PATH).get(0).header("Authorization")).isEqualTo("Bearer fresh");
+        assertThat(libraryService.recorded("GET", LIBRARY_EXPORT_PATH).get(0).header("Authorization")).isEqualTo("Bearer " + token("fresh"));
+        assertThat(recommendationService.recorded("GET", RECOMMENDATION_EXPORT_PATH).get(0).header("Authorization")).isEqualTo("Bearer " + token("fresh"));
         assertThat(keycloak.recorded("GET", ADMIN_USER_PATH))
                 .allSatisfy(r -> assertThat(r.header("Authorization")).isEqualTo("Bearer admin-token"));
     }
@@ -126,10 +123,9 @@ class AccountExportTest extends GatewayTestBase {
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.error").value("Not authenticated"));
 
-        // A cookie the decoder rejects never reaches the controller: the resource-server
-        // filter reads the same cookie and answers 401 itself.
         mvc.perform(get(EXPORT).cookie(accessCookie("forged")))
-                .andExpect(status().isUnauthorized());
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.error").value("Invalid token"));
 
         assertThat(keycloak.recorded()).isEmpty();
         assertThat(libraryService.recorded()).isEmpty();
@@ -138,10 +134,7 @@ class AccountExportTest extends GatewayTestBase {
 
     @Test
     void refusedWhenTheTokenNamesNoSubject() throws Exception {
-        Instant now = Instant.now();
-        Jwt noSubject = Jwt.withTokenValue("no-sub").header("alg", "RS256").claim("azp", CLIENT_ID)
-                .issuedAt(now).expiresAt(now.plusSeconds(300)).build();
-        doReturn(noSubject).when(jwtDecoder).decode("no-sub");
+        issueBare("no-sub", null, Map.of("azp", CLIENT_ID));
 
         mvc.perform(get(EXPORT).cookie(accessCookie("no-sub")))
                 .andExpect(status().isUnauthorized())

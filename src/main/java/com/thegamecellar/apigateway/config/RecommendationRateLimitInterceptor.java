@@ -17,7 +17,6 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.servlet.HandlerInterceptor;
 
 import java.time.Duration;
-import java.util.function.Supplier;
 
 // Per-user limit; one request fans out to 5-10 downstream calls so flooding amplifies backend load.
 @Component
@@ -46,9 +45,8 @@ public class RecommendationRateLimitInterceptor implements HandlerInterceptor {
     @Override
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) throws Exception {
         String key = "ratelimit:rec:" + bucketKey(request);
-        Bucket bucket = resolveBucket(key);
 
-        if (bucket.tryConsume(1)) {
+        if (RateLimitBuckets.tryConsume(proxyManager, localBuckets, key, this::bucketConfig)) {
             return true;
         }
 
@@ -56,14 +54,6 @@ public class RecommendationRateLimitInterceptor implements HandlerInterceptor {
         response.setContentType("application/json");
         response.getWriter().write("{\"error\":\"Too many recommendation requests. Please slow down.\"}");
         return false;
-    }
-
-    private Bucket resolveBucket(String key) {
-        Supplier<BucketConfiguration> configSupplier = this::bucketConfig;
-        if (proxyManager != null) {
-            return proxyManager.builder().build(key, configSupplier);
-        }
-        return localBuckets.get(key, k -> Bucket.builder().addLimit(configSupplier.get().getBandwidths()[0]).build());
     }
 
     private BucketConfiguration bucketConfig() {

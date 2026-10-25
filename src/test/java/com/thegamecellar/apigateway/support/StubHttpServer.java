@@ -6,10 +6,13 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 
 // A programmable HTTP endpoint on a random port, standing in for Keycloak, library-service
@@ -36,12 +39,25 @@ public final class StubHttpServer {
         }
     }
 
+    // A peer that accepts the request and answers only after the caller's read timeout.
+    public static Function<RecordedRequest, StubResponse> after(Duration delay, StubResponse response) {
+        return request -> {
+            try {
+                Thread.sleep(delay.toMillis());
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            return response;
+        };
+    }
+
     private record Route(String method, String pathPrefix, Function<RecordedRequest, StubResponse> handler) {}
 
-    private static final java.util.concurrent.atomic.AtomicLong SEQUENCE = new java.util.concurrent.atomic.AtomicLong();
+    private static final AtomicLong SEQUENCE = new AtomicLong();
 
     private final HttpServer server;
     private final List<Route> routes = new CopyOnWriteArrayList<>();
+    private final List<Route> permanentRoutes = new CopyOnWriteArrayList<>();
     private final List<RecordedRequest> recorded = new CopyOnWriteArrayList<>();
 
     private StubHttpServer(HttpServer server) {
@@ -53,6 +69,13 @@ public final class StubHttpServer {
             HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
             StubHttpServer stub = new StubHttpServer(server);
             server.createContext("/", exchange -> stub.handle(exchange));
+            // A handler that sleeps past a timeout must not hold up the next test's requests,
+            // which the JDK server's default of one dispatcher thread would do.
+            server.setExecutor(Executors.newCachedThreadPool(runnable -> {
+                Thread thread = new Thread(runnable, "stub-http");
+                thread.setDaemon(true);
+                return thread;
+            }));
             server.start();
             return stub;
         } catch (IOException e) {
@@ -71,6 +94,12 @@ public final class StubHttpServer {
 
     public void on(String method, String pathPrefix, StubResponse response) {
         on(method, pathPrefix, request -> response);
+    }
+
+    // Survives reset() and is never recorded: infrastructure such as the JWKS, which the
+    // decoder fetches whenever its cache decides to, not when a test asks for it.
+    public void serveQuietly(String method, String path, StubResponse response) {
+        permanentRoutes.add(new Route(method, path, request -> response));
     }
 
     public void reset() {
@@ -97,6 +126,15 @@ public final class StubHttpServer {
                 exchange.getRequestURI().getRawQuery(),
                 exchange.getRequestHeaders(),
                 body);
+
+        Route permanent = permanentRoutes.stream()
+                .filter(route -> route.method().equals(request.method()) && request.path().equals(route.pathPrefix()))
+                .findFirst()
+                .orElse(null);
+        if (permanent != null) {
+            respond(exchange, permanent.handler().apply(request));
+            return;
+        }
         recorded.add(request);
 
         StubResponse response = routes.stream()
@@ -104,7 +142,10 @@ public final class StubHttpServer {
                 .findFirst()
                 .map(route -> route.handler().apply(request))
                 .orElse(StubResponse.json(404, "{\"error\":\"no stub for " + request.method() + " " + request.path() + "\"}"));
+        respond(exchange, response);
+    }
 
+    private static void respond(com.sun.net.httpserver.HttpExchange exchange, StubResponse response) throws IOException {
         response.headers().forEach((name, value) -> exchange.getResponseHeaders().add(name, value));
         byte[] bytes = response.body().getBytes(StandardCharsets.UTF_8);
         exchange.sendResponseHeaders(response.status(), bytes.length == 0 ? -1 : bytes.length);

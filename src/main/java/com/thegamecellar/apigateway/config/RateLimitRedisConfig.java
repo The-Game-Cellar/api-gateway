@@ -21,7 +21,8 @@ import java.time.Duration;
 
 // Wires a Lettuce-backed Bucket4j ProxyManager when distributed rate-limit is enabled.
 // Failure mode: if Redis is unreachable at startup, beans return null and the interceptors
-// transparently fall back to the in-memory Caffeine path (single-instance ceiling).
+// transparently fall back to the in-memory Caffeine path (single-instance ceiling). A Redis that
+// fails later is caught per request in RateLimitBuckets, after the command timeout set here.
 @Configuration
 @ConditionalOnProperty(name = "recommendation.ratelimit.distributed", havingValue = "true")
 public class RateLimitRedisConfig {
@@ -32,8 +33,11 @@ public class RateLimitRedisConfig {
     public RedisClient rateLimitRedisClient(
             @Value("${spring.data.redis.host:localhost}") String host,
             @Value("${spring.data.redis.port:6379}") int port,
-            @Value("${spring.data.redis.password:}") String password) {
-        RedisURI.Builder builder = RedisURI.builder().withHost(host).withPort(port);
+            @Value("${spring.data.redis.password:}") String password,
+            @Value("${spring.data.redis.timeout:2s}") Duration timeout) {
+        // This client is built by hand, so Spring's Redis settings reach it only through here.
+        // Without the timeout Lettuce waits a minute on every command to a Redis that hangs.
+        RedisURI.Builder builder = RedisURI.builder().withHost(host).withPort(port).withTimeout(timeout);
         if (password != null && !password.isBlank()) {
             builder.withPassword(password.toCharArray());
         }

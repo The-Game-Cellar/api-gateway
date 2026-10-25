@@ -6,28 +6,20 @@ import org.junit.jupiter.api.BeforeEach;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.security.oauth2.jwt.BadJwtException;
-import org.springframework.security.oauth2.jwt.Jwt;
-import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.test.web.servlet.MockMvc;
 
-import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
-
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.doReturn;
-import static org.mockito.Mockito.lenient;
+import java.util.function.Function;
 
 // One Spring context for the whole suite. Every outbound URL the gateway knows points at a
-// stub on this machine, and the JwtDecoder is a mock, so nothing here needs Keycloak, Redis
-// or a downstream service to exist.
+// stub on this machine, and tokens are signed with a test key the Keycloak stub publishes as
+// the realm's JWKS, so the gateway's own decoder checks signature, issuer, azp and expiry.
 @SpringBootTest
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
@@ -36,8 +28,8 @@ public abstract class GatewayTestBase {
     public static final String APP_URL = "http://app.test";
     public static final String KEYCLOAK_PUBLIC_URL = "http://auth.test";
     public static final String REDIRECT_URI = "http://gw.test/api/v1/auth/callback";
-    public static final String CLIENT_ID = "game-cellar-client";
-    public static final String REALM = "game-cellar";
+    public static final String CLIENT_ID = TestTokens.CLIENT_ID;
+    public static final String REALM = TestTokens.REALM;
     public static final String TOKEN_PATH = "/realms/" + REALM + "/protocol/openid-connect/token";
 
     protected static final StubHttpServer keycloak = StubHttpServer.start();
@@ -45,10 +37,15 @@ public abstract class GatewayTestBase {
     protected static final StubHttpServer libraryService = StubHttpServer.start();
     protected static final StubHttpServer recommendationService = StubHttpServer.start();
 
+    static {
+        keycloak.serveQuietly("GET", TestTokens.JWKS_PATH, StubHttpServer.StubResponse.json(200, TestTokens.jwksJson()));
+    }
+
     @DynamicPropertySource
     static void wireStubs(DynamicPropertyRegistry registry) {
         registry.add("KEYCLOAK_AUTH_SERVER_URL", keycloak::baseUrl);
         registry.add("KEYCLOAK_PUBLIC_URL", () -> KEYCLOAK_PUBLIC_URL);
+        registry.add("KEYCLOAK_ISSUER_URI", () -> TestTokens.ISSUER);
         registry.add("GAME_SERVICE_URL", gameService::baseUrl);
         registry.add("LIBRARY_SERVICE_URL", libraryService::baseUrl);
         registry.add("RECOMMENDATION_SERVICE_URL", recommendationService::baseUrl);
@@ -60,63 +57,40 @@ public abstract class GatewayTestBase {
     @Autowired
     protected MockMvc mvc;
 
-    @MockitoBean
-    protected JwtDecoder jwtDecoder;
-
     @Autowired
     private KeycloakAdminClient keycloakAdminClient;
 
     @BeforeEach
-    void resetStubsAndDecoder() {
+    void resetStubsAndTokens() {
         keycloak.reset();
         gameService.reset();
         libraryService.reset();
         recommendationService.reset();
+        TestTokens.forgetAll();
         gameService.on("GET", "/", StubHttpServer.StubResponse.json(200, "{\"from\":\"game\"}"));
         libraryService.on("GET", "/", StubHttpServer.StubResponse.json(200, "{\"from\":\"library\"}"));
         recommendationService.on("GET", "/", StubHttpServer.StubResponse.json(200, "{\"from\":\"recommendation\"}"));
-        // Anything not explicitly issued by a test is rejected, the way a real decoder rejects
-        // a token it cannot verify.
-        lenient().when(jwtDecoder.decode(anyString())).thenThrow(new BadJwtException("unknown token"));
     }
 
-    protected Jwt issue(String tokenValue, String subject, Map<String, Object> extraClaims) {
-        Instant now = Instant.now();
-        Jwt.Builder builder = Jwt.withTokenValue(tokenValue)
-                .header("alg", "RS256")
-                .subject(subject)
-                .issuedAt(now)
-                .expiresAt(now.plusSeconds(300))
-                .claim("azp", CLIENT_ID)
-                .claim("email", subject + "@example.test")
-                .claim("preferred_username", subject);
-        extraClaims.forEach(builder::claim);
-        Jwt jwt = builder.build();
-        // doReturn rather than when(): when() would invoke the mock, and the default stub throws.
-        doReturn(jwt).when(jwtDecoder).decode(tokenValue);
-        return jwt;
+    protected String issue(String name, String subject, Map<String, Object> extraClaims) {
+        return TestTokens.issue(name, subject, extraClaims);
     }
 
-    protected Jwt issue(String tokenValue, String subject) {
-        return issue(tokenValue, subject, Map.of());
+    protected String issue(String name, String subject) {
+        return issue(name, subject, Map.of());
     }
 
-    // No defaults at all, for the cases where a claim being absent is the point.
-    protected Jwt issueBare(String tokenValue, String subject, Map<String, Object> claims) {
-        Instant now = Instant.now();
-        Jwt.Builder builder = Jwt.withTokenValue(tokenValue)
-                .header("alg", "RS256")
-                .subject(subject)
-                .issuedAt(now)
-                .expiresAt(now.plusSeconds(300));
-        claims.forEach(builder::claim);
-        Jwt jwt = builder.build();
-        doReturn(jwt).when(jwtDecoder).decode(tokenValue);
-        return jwt;
+    protected String issueBare(String name, String subject, Map<String, Object> claims) {
+        return TestTokens.issueBare(name, subject, claims);
     }
 
-    protected Jwt issueWithRoles(String tokenValue, String subject, String... roles) {
-        return issue(tokenValue, subject, Map.of("realm_access", Map.of("roles", List.of(roles))));
+    protected String issueWithRoles(String name, String subject, String... roles) {
+        return issue(name, subject, Map.of("realm_access", Map.of("roles", List.of(roles))));
+    }
+
+    // The signed value behind a name, for asserting what was forwarded or set as a cookie.
+    protected static String token(String name) {
+        return TestTokens.resolve(name);
     }
 
     // The admin token is cached for the life of the shared context, so whether an admin call
@@ -125,16 +99,20 @@ public abstract class GatewayTestBase {
         ((AtomicReference<?>) ReflectionTestUtils.getField(keycloakAdminClient, "cachedToken")).set(null);
     }
 
-    protected static Cookie accessCookie(String token) {
-        return new Cookie("access_token", token);
+    protected static Cookie accessCookie(String name) {
+        return new Cookie("access_token", token(name));
     }
 
+    // Refresh tokens are opaque to the gateway, which only passes them to Keycloak.
     protected static Cookie refreshCookie(String token) {
         return new Cookie("refresh_token", token);
     }
 
-    protected static String tokenJson(String accessToken, String refreshToken, String idToken) {
-        return "{\"access_token\":\"" + accessToken + "\",\"refresh_token\":\"" + refreshToken
-                + "\",\"id_token\":\"" + idToken + "\",\"expires_in\":300}";
+    // Resolved when Keycloak is asked, so a test may issue the tokens after wiring the stub.
+    protected static Function<StubHttpServer.RecordedRequest, StubHttpServer.StubResponse> tokenResponse(
+            String accessName, String refreshToken, String idName) {
+        return request -> StubHttpServer.StubResponse.json(200, "{\"access_token\":\"" + token(accessName)
+                + "\",\"refresh_token\":\"" + refreshToken
+                + "\",\"id_token\":\"" + token(idName) + "\",\"expires_in\":300}");
     }
 }
